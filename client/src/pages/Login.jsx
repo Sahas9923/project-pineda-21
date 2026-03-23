@@ -84,6 +84,7 @@ const LoginPage = () => {
         role: "parent",
         contact: "",
         address: "",
+        imageUrl: "", 
         createdAt: serverTimestamp(),
       });
     }
@@ -98,6 +99,7 @@ const LoginPage = () => {
         contact: "",
         slmcNumber: "",
         experience: "",
+        imageUrl: "", 
         createdAt: serverTimestamp(),
       });
     }

@@ -112,7 +112,7 @@ const TherapistNavbar = () => {
               className="dropdown-btn"
               onClick={() => {
                 setShowDropdown(false);
-                navigate("/settings");
+                navigate("/therapist-settings");
               }}
             >
               ⚙️ Settings
