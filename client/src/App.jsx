@@ -1,16 +1,16 @@
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 
-import Home from "./pages/Login";
+import Login from "./pages/Login";
 import ParentDashboard from "./pages/ParentDashboard";
-import Practice from "./pages/Practice";
+import TherapistDashboard from "./pages/TherapistDashboard";
 
 function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<Login />} />
         <Route path="/parent-dashboard" element={<ParentDashboard />} />
-        <Route path="/practice" element={<Practice />} />
+        <Route path="/therapist-dashboard" element={<TherapistDashboard />} />
       </Routes>
     </Router>
   );

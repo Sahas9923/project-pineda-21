@@ -1,13 +1,13 @@
-.dashboard-container {
+.therapist-container {
   min-height: 100vh;
   background: #eef2f3;
 }
 
-.dashboard-content {
+.therapist-content {
   padding: 40px;
 }
 
-.dashboard-top {
+.therapist-top {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -21,13 +21,13 @@
   color: #333;
 }
 
-.dashboard-subtitle {
+.therapist-subtitle {
   color: #666;
   font-size: 15px;
   margin: 0;
 }
 
-.parent-profile-card {
+.therapist-profile-card {
   display: flex;
   align-items: center;
   gap: 18px;
@@ -67,7 +67,7 @@
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 20px;
 }
 
@@ -94,23 +94,23 @@
   font-size: 15px;
 }
 
-@media (max-width: 992px) {
+@media (max-width: 1100px) {
   .cards {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .dashboard-top {
+  .therapist-top {
     flex-direction: column;
   }
 
-  .parent-profile-card {
+  .therapist-profile-card {
     width: 100%;
     min-width: unset;
   }
 }
 
 @media (max-width: 600px) {
-  .dashboard-content {
+  .therapist-content {
     padding: 20px;
   }
 

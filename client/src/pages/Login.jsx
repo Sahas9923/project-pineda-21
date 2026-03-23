@@ -1,11 +1,25 @@
-import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom"; // ✅ IMPORTANT
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import "../styles/Login.css";
 
+// Firebase
+import { auth, db } from "../firebase/config";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+} from "firebase/auth";
+import {
+  doc,
+  setDoc,
+  getDoc,
+  serverTimestamp,
+  runTransaction,
+} from "firebase/firestore";
 
 const LoginPage = () => {
-
-  const navigate = useNavigate(); // ✅ MUST be inside component
+  const navigate = useNavigate();
 
   const [isRegister, setIsRegister] = useState(false);
   const [role, setRole] = useState("parent");
@@ -14,35 +28,242 @@ const LoginPage = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const [slmcNumber, setSlmcNumber] = useState("");
-  const [experience, setExperience] = useState("");
-  const [contact, setContact] = useState("");
-  const [linkedin, setLinkedin] = useState("");
+  const goToDashboard = (userRole) => {
+    if (userRole === "parent") {
+      navigate("/parent-dashboard");
+    } else if (userRole === "therapist") {
+      navigate("/therapist-dashboard");
+    } else {
+      alert("❌ Invalid role.");
+    }
+  };
 
-  const handleSubmit = (e) => {
+  const generateReadableId = async (userRole) => {
+    const counterDocId =
+      userRole === "parent" ? "parentCounter" : "therapistCounter";
+    const prefix = userRole === "parent" ? "PAR" : "THE";
+
+    const counterRef = doc(db, "counters", counterDocId);
+
+    const newCount = await runTransaction(db, async (transaction) => {
+      const counterSnap = await transaction.get(counterRef);
+
+      let count = 1;
+
+      if (!counterSnap.exists()) {
+        transaction.set(counterRef, { count: 1 });
+        return 1;
+      } else {
+        count = counterSnap.data().count + 1;
+        transaction.update(counterRef, { count });
+        return count;
+      }
+    });
+
+    return `${prefix}-${String(newCount).padStart(4, "0")}`;
+  };
+
+  const createUserDocuments = async (uid, userData) => {
+    const readableId = await generateReadableId(userData.role);
+
+    // users collection
+    await setDoc(doc(db, "users", uid), {
+      name: userData.name,
+      email: userData.email,
+      role: userData.role,
+      readableId,
+      createdAt: serverTimestamp(),
+    });
+
+    // parents collection
+    if (userData.role === "parent") {
+      await setDoc(doc(db, "parents", uid), {
+        parentId: readableId,
+        name: userData.name,
+        email: userData.email,
+        role: "parent",
+        contact: "",
+        address: "",
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    // therapists collection
+    if (userData.role === "therapist") {
+      await setDoc(doc(db, "therapists", uid), {
+        therapistId: readableId,
+        name: userData.name,
+        email: userData.email,
+        role: "therapist",
+        contact: "",
+        slmcNumber: "",
+        experience: "",
+        createdAt: serverTimestamp(),
+      });
+    }
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!isRegister) {
-      if (role === "parent") {
-        navigate("/parent-dashboard"); // ✅ redirect works
-      } else if (role === "therapist") {
-        navigate("/therapist"); // optional
+    try {
+      if (isRegister) {
+        if (!name.trim()) {
+          alert("❌ Please enter your full name.");
+          return;
+        }
+
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          email.trim(),
+          password
+        );
+
+        const uid = userCredential.user.uid;
+
+        await createUserDocuments(uid, {
+          name: name.trim(),
+          email: email.trim(),
+          role,
+        });
+
+        if (role === "parent") {
+          alert("✅ Parent account created successfully!");
+          goToDashboard("parent");
+        } else if (role === "therapist") {
+          alert("✅ Therapist account created successfully!");
+          goToDashboard("therapist");
+        }
+      } else {
+        const userCredential = await signInWithEmailAndPassword(
+          auth,
+          email.trim(),
+          password
+        );
+
+        const uid = userCredential.user.uid;
+
+        const userDoc = await getDoc(doc(db, "users", uid));
+
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+
+          if (userData.role === "parent") {
+            alert("✅ Login successful!");
+            goToDashboard("parent");
+            return;
+          }
+
+          if (userData.role === "therapist") {
+            alert("✅ Login successful!");
+            goToDashboard("therapist");
+            return;
+          }
+        }
+
+        const parentDoc = await getDoc(doc(db, "parents", uid));
+        const therapistDoc = await getDoc(doc(db, "therapists", uid));
+
+        if (parentDoc.exists()) {
+          alert("✅ Login successful!");
+          goToDashboard("parent");
+        } else if (therapistDoc.exists()) {
+          alert("✅ Login successful!");
+          goToDashboard("therapist");
+        } else {
+          alert("❌ User role not found!");
+        }
       }
-    } else {
-      alert(`Account Created as ${role}`);
+    } catch (error) {
+      console.error("Auth error:", error);
+
+      if (error.code === "auth/email-already-in-use") {
+        alert("❌ This email is already registered.");
+      } else if (error.code === "auth/invalid-email") {
+        alert("❌ Invalid email address.");
+      } else if (error.code === "auth/weak-password") {
+        alert("❌ Password should be at least 6 characters.");
+      } else if (
+        error.code === "auth/user-not-found" ||
+        error.code === "auth/wrong-password" ||
+        error.code === "auth/invalid-credential"
+      ) {
+        alert("❌ Invalid credentials.");
+      } else {
+        alert("❌ " + error.message);
+      }
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+
+      const user = result.user;
+      const uid = user.uid;
+
+      const userRef = doc(db, "users", uid);
+      const parentRef = doc(db, "parents", uid);
+      const therapistRef = doc(db, "therapists", uid);
+
+      const userDoc = await getDoc(userRef);
+      const parentDoc = await getDoc(parentRef);
+      const therapistDoc = await getDoc(therapistRef);
+
+      // new google user -> create based on selected role
+      if (!userDoc.exists() && !parentDoc.exists() && !therapistDoc.exists()) {
+        await createUserDocuments(uid, {
+          name: user.displayName || "User",
+          email: user.email || "",
+          role: role,
+        });
+
+        alert("✅ Google sign in successful!");
+        goToDashboard(role);
+        return;
+      }
+
+      // existing user
+      if (userDoc.exists()) {
+        const userData = userDoc.data();
+
+        if (userData.role === "parent") {
+          alert("✅ Google sign in successful!");
+          goToDashboard("parent");
+          return;
+        }
+
+        if (userData.role === "therapist") {
+          alert("✅ Google sign in successful!");
+          goToDashboard("therapist");
+          return;
+        }
+      }
+
+      if (parentDoc.exists()) {
+        alert("✅ Google sign in successful!");
+        goToDashboard("parent");
+      } else if (therapistDoc.exists()) {
+        alert("✅ Google sign in successful!");
+        goToDashboard("therapist");
+      } else {
+        alert("❌ User role not found!");
+      }
+    } catch (error) {
+      console.error("Google login error:", error);
+      alert("❌ " + error.message);
     }
   };
 
   return (
     <div className="login-container">
-
       {/* LEFT SIDE */}
       <div className="left-panel">
-
-         <div className="teddy-rain">
-            {[...Array(20)].map((_, i) => (
-                <span key={i}>🧸</span>
-            ))}
+        <div className="teddy-rain">
+          {[...Array(20)].map((_, i) => (
+            <span key={i}>🧸</span>
+          ))}
         </div>
 
         <div className="info-content">
@@ -61,69 +282,65 @@ const LoginPage = () => {
       {/* RIGHT SIDE */}
       <div className="right-panel">
         <div className="login-box">
-
-          {/* HEADER */}
           <div className="header">
             <div className="logo-icon">🧸</div>
             <h2>Welcome to Pineda</h2>
 
             <div className="sound-btn-container">
-            <button
-            className="sound-btn"
-            onClick={() => {
-                const speak = () => {
-                const msg = new SpeechSynthesisUtterance(
-                    "Welcome to Pineda. Let's practice speaking together."
-                );
+              <button
+                type="button"
+                className="sound-btn"
+                onClick={() => {
+                  const speak = () => {
+                    const msg = new SpeechSynthesisUtterance(
+                      "Welcome to Pineda. Let's practice speaking together."
+                    );
 
-                msg.rate = 0.85;   // slower for clarity
-                msg.pitch = 1.4;   // more friendly / feminine
+                    msg.rate = 0.85;
+                    msg.pitch = 1.4;
 
-                const voices = window.speechSynthesis.getVoices();
+                    const voices = window.speechSynthesis.getVoices();
 
-                // try to select female voice
-                const femaleVoice = voices.find(
-                    (voice) =>
-                    voice.name.toLowerCase().includes("zira") ||
-                    voice.name.toLowerCase().includes("samantha") ||
-                    voice.name.toLowerCase().includes("female") ||
-                    voice.name.toLowerCase().includes("google")
-                );
+                    const femaleVoice = voices.find(
+                      (voice) =>
+                        voice.name.toLowerCase().includes("zira") ||
+                        voice.name.toLowerCase().includes("samantha") ||
+                        voice.name.toLowerCase().includes("female") ||
+                        voice.name.toLowerCase().includes("google")
+                    );
 
-                if (femaleVoice) {
-                    msg.voice = femaleVoice;
-                }
+                    if (femaleVoice) msg.voice = femaleVoice;
 
-                window.speechSynthesis.cancel();
-                window.speechSynthesis.speak(msg);
-                };
+                    window.speechSynthesis.cancel();
+                    window.speechSynthesis.speak(msg);
+                  };
 
-                // ensure voices loaded
-                if (speechSynthesis.getVoices().length === 0) {
-                speechSynthesis.onvoiceschanged = speak;
-                } else {
-                speak();
-                }
-            }}
-            >
-            🔊 Play Welcome
-        </button>
-        </div>
+                  if (speechSynthesis.getVoices().length === 0) {
+                    speechSynthesis.onvoiceschanged = speak;
+                  } else {
+                    speak();
+                  }
+                }}
+              >
+                🔊 Play Welcome
+              </button>
+            </div>
 
             <p className="subtitle">
               {isRegister ? "Create your account" : "Sign in to continue"}
             </p>
           </div>
 
-          {/* TABS */}
           <div className="tabs">
             <button
+              type="button"
               className={!isRegister ? "active" : ""}
               onClick={() => setIsRegister(false)}
             >
               Sign In
             </button>
             <button
+              type="button"
               className={isRegister ? "active" : ""}
               onClick={() => setIsRegister(true)}
             >
@@ -131,15 +348,16 @@ const LoginPage = () => {
             </button>
           </div>
 
-          {/* ROLE */}
           <div className="role-switch">
             <button
+              type="button"
               className={role === "parent" ? "selected" : ""}
               onClick={() => setRole("parent")}
             >
               👨‍👩‍👦 Parent
             </button>
             <button
+              type="button"
               className={role === "therapist" ? "selected" : ""}
               onClick={() => setRole("therapist")}
             >
@@ -147,9 +365,7 @@ const LoginPage = () => {
             </button>
           </div>
 
-          {/* FORM */}
           <form onSubmit={handleSubmit}>
-
             {isRegister && (
               <input
                 type="text"
@@ -176,46 +392,23 @@ const LoginPage = () => {
               required
             />
 
-            {/* Therapist Fields */}
-            {isRegister && role === "therapist" && (
-              <>
-                <input
-                  type="text"
-                  placeholder="SLMC Number"
-                  value={slmcNumber}
-                  onChange={(e) => setSlmcNumber(e.target.value)}
-                />
-                <input
-                  type="text"
-                  placeholder="Years of Experience"
-                  value={experience}
-                  onChange={(e) => setExperience(e.target.value)}
-                />
-                <input
-                  type="text"
-                  placeholder="Contact Number"
-                  value={contact}
-                  onChange={(e) => setContact(e.target.value)}
-                />
-                <input
-                  type="text"
-                  placeholder="LinkedIn (optional)"
-                  value={linkedin}
-                  onChange={(e) => setLinkedin(e.target.value)}
-                />
-              </>
-            )}
-
-            <button className="submit-btn">
+            <button type="submit" className="submit-btn">
               {isRegister ? "Create Account" : "Sign In"}
             </button>
           </form>
 
-          {/* DEVICE BUTTON */}
-          <button className="device-btn">
-            🧸 Open Device / Toy Mode
+          <button
+            type="button"
+            className="google-btn"
+            onClick={handleGoogleLogin}
+          >
+            <span className="google-icon">G</span>
+            <span>Continue with Google</span>
           </button>
 
+          <button type="button" className="device-btn">
+            🧸 Open Device / Toy Mode
+          </button>
         </div>
       </div>
     </div>
