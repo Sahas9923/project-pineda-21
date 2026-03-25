@@ -69,7 +69,9 @@ body {
 
 .admin-form input,
 .admin-form textarea,
-.admin-form select {
+.admin-form select,
+.edit-form input,
+.edit-form textarea {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid #d1d5db;
@@ -78,14 +80,17 @@ body {
   outline: none;
 }
 
-.admin-form textarea {
+.admin-form textarea,
+.edit-form textarea {
   min-height: 100px;
   resize: vertical;
 }
 
 .admin-form input:focus,
 .admin-form textarea:focus,
-.admin-form select:focus {
+.admin-form select:focus,
+.edit-form input:focus,
+.edit-form textarea:focus {
   border-color: #2ec4b6;
 }
 
@@ -150,6 +155,73 @@ body {
   color: #6b7280;
   font-size: 14px;
   line-height: 1.5;
+}
+
+.level-action-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.edit-btn,
+.delete-level-btn {
+  flex: 1;
+  padding: 10px 14px;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.edit-btn {
+  background: #2ec4b6;
+}
+
+.delete-level-btn {
+  background: #ef4444;
+}
+
+.edit-btn:hover,
+.delete-level-btn:hover {
+  opacity: 0.92;
+}
+
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.edit-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.edit-buttons button {
+  flex: 1;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.edit-buttons button[type="submit"] {
+  background: #2ec4b6;
+  color: white;
+}
+
+.edit-buttons button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.cancel-btn {
+  background: #e5e7eb;
+  color: #111827;
 }
 
 .items-header {
@@ -245,5 +317,9 @@ body {
 
   .admin-dashboard {
     padding: 18px;
+  }
+
+  .level-action-buttons {
+    flex-direction: column;
   }
 }

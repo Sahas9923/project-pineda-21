@@ -10,12 +10,14 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 import {
   ref,
   uploadBytes,
   getDownloadURL,
   deleteObject,
+  listAll,
 } from "firebase/storage";
 
 const AdminDashboard = () => {
@@ -25,6 +27,10 @@ const AdminDashboard = () => {
   const [levelTitle, setLevelTitle] = useState("");
   const [levelDescription, setLevelDescription] = useState("");
 
+  const [editingLevelId, setEditingLevelId] = useState(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+
   const [itemText, setItemText] = useState("");
   const [itemType, setItemType] = useState("sound");
   const [imageFile, setImageFile] = useState(null);
@@ -33,6 +39,8 @@ const AdminDashboard = () => {
   const [message, setMessage] = useState("");
   const [loadingLevel, setLoadingLevel] = useState(false);
   const [loadingItem, setLoadingItem] = useState(false);
+  const [updatingLevel, setUpdatingLevel] = useState(false);
+  const [deletingLevel, setDeletingLevel] = useState(false);
 
   useEffect(() => {
     fetchLevels();
@@ -63,8 +71,13 @@ const AdminDashboard = () => {
 
       setLevels(levelList);
 
-      if (levelList.length > 0 && !selectedLevel) {
-        setSelectedLevel(levelList[0].id);
+      if (levelList.length > 0) {
+        const stillExists = levelList.some((lvl) => lvl.id === selectedLevel);
+        if (!selectedLevel || !stillExists) {
+          setSelectedLevel(levelList[0].id);
+        }
+      } else {
+        setSelectedLevel("");
       }
     } catch (error) {
       console.error("Error fetching levels:", error);
@@ -123,6 +136,48 @@ const AdminDashboard = () => {
     } finally {
       setLoadingLevel(false);
     }
+  };
+
+  const handleEditLevel = (level) => {
+    setEditingLevelId(level.id);
+    setEditTitle(level.title || "");
+    setEditDescription(level.description || "");
+  };
+
+  const handleUpdateLevel = async (e) => {
+    e.preventDefault();
+
+    if (!editTitle.trim() || !editDescription.trim()) {
+      showMessage("❌ Please fill all edit fields.");
+      return;
+    }
+
+    try {
+      setUpdatingLevel(true);
+
+      await updateDoc(doc(db, "levels", editingLevelId), {
+        title: editTitle.trim(),
+        description: editDescription.trim(),
+      });
+
+      setEditingLevelId(null);
+      setEditTitle("");
+      setEditDescription("");
+
+      await fetchLevels();
+      showMessage("✅ Level updated successfully.");
+    } catch (error) {
+      console.error("Error updating level:", error);
+      showMessage("❌ Failed to update level.");
+    } finally {
+      setUpdatingLevel(false);
+    }
+  };
+
+  const cancelEditLevel = () => {
+    setEditingLevelId(null);
+    setEditTitle("");
+    setEditDescription("");
   };
 
   const handleAddItem = async (e) => {
@@ -195,6 +250,56 @@ const AdminDashboard = () => {
     } catch (error) {
       console.error("Error deleting item:", error);
       showMessage("❌ Failed to delete item.");
+    }
+  };
+
+  const handleDeleteLevel = async (levelId) => {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this level and all its items?"
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingLevel(true);
+
+      // 1. Delete all item images from Storage folder
+      const folderRef = ref(storage, `speech-items/${levelId}`);
+      try {
+        const folderItems = await listAll(folderRef);
+        for (const fileRef of folderItems.items) {
+          await deleteObject(fileRef);
+        }
+      } catch (storageError) {
+        console.warn("Storage folder may be empty or missing:", storageError);
+      }
+
+      // 2. Delete all item documents from Firestore
+      const itemsSnapshot = await getDocs(collection(db, "levels", levelId, "items"));
+      for (const itemDoc of itemsSnapshot.docs) {
+        await deleteDoc(doc(db, "levels", levelId, "items", itemDoc.id));
+      }
+
+      // 3. Delete the level document
+      await deleteDoc(doc(db, "levels", levelId));
+
+      // 4. Reset edit mode if needed
+      if (editingLevelId === levelId) {
+        cancelEditLevel();
+      }
+
+      // 5. Refresh levels and items
+      await fetchLevels();
+
+      if (selectedLevel === levelId) {
+        setItems([]);
+      }
+
+      showMessage("✅ Level and all items deleted successfully.");
+    } catch (error) {
+      console.error("Error deleting level:", error);
+      showMessage("❌ Failed to delete level.");
+    } finally {
+      setDeletingLevel(false);
     }
   };
 
@@ -292,8 +397,69 @@ const AdminDashboard = () => {
                 className={`level-box ${selectedLevel === level.id ? "active-level" : ""}`}
                 onClick={() => setSelectedLevel(level.id)}
               >
-                <h3>{level.title}</h3>
-                <p>{level.description}</p>
+                {editingLevelId === level.id ? (
+                  <form
+                    className="edit-form"
+                    onSubmit={handleUpdateLevel}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="text"
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      placeholder="Edit level title"
+                    />
+
+                    <textarea
+                      value={editDescription}
+                      onChange={(e) => setEditDescription(e.target.value)}
+                      placeholder="Edit level description"
+                    />
+
+                    <div className="edit-buttons">
+                      <button type="submit" disabled={updatingLevel}>
+                        {updatingLevel ? "Saving..." : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="cancel-btn"
+                        onClick={cancelEditLevel}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <h3>{level.title}</h3>
+                    <p>{level.description}</p>
+
+                    <div className="level-action-buttons">
+                      <button
+                        className="edit-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditLevel(level);
+                        }}
+                      >
+                        Edit Level
+                      </button>
+
+                      <button
+                        className="delete-level-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteLevel(level.id);
+                        }}
+                        disabled={deletingLevel}
+                      >
+                        {deletingLevel && selectedLevel === level.id
+                          ? "Deleting..."
+                          : "Delete Level"}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -321,7 +487,7 @@ const AdminDashboard = () => {
                     className="delete-btn"
                     onClick={() => handleDeleteItem(item.id, item.storagePath)}
                   >
-                    Delete
+                    Delete Item
                   </button>
                 </div>
               </div>
