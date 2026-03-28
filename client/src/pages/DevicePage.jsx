@@ -16,7 +16,7 @@ import {
   updateDoc,
 } from "firebase/firestore";
 
-const SERVER = "http://192.168.1.3:5000";
+const SERVER = "https://project-pineda-21-backend.onrender.com";
 const MAX_ATTEMPTS = 3;
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 35000;
@@ -41,7 +41,9 @@ const DevicePage = () => {
   const [sessionPaused, setSessionPaused] = useState(false);
   const [sessionBlocked, setSessionBlocked] = useState(false);
 
-  const [selectedMode, setSelectedMode] = useState("therapy");
+  const [selectedMode, setSelectedMode] = useState("companion");
+  const [companionActive, setCompanionActive] = useState(false);
+
   const [therapyModeAllowed, setTherapyModeAllowed] = useState(true);
   const [therapyRestrictionMessage, setTherapyRestrictionMessage] = useState("");
 
@@ -75,23 +77,23 @@ const DevicePage = () => {
 
   const friendlyFeedback = useMemo(() => {
     if (selectedMode === "companion") {
-      if (!sessionStarted) return "Press start to begin companion mode.";
-      if (sessionPaused) return "Companion mode paused.";
-      if (sessionCompleted) return "Companion mode ended.";
-      return "Companion mode active.";
+      if (pageError) return pageError;
+      return companionActive
+        ? "Companion mode is active and waiting for a keyword."
+        : "Preparing companion mode.";
     }
 
     if (!latestResult) {
-      if (sessionPaused) return "Session paused.";
-      if (sessionCompleted) return "Session completed.";
-      return "Ready for the next practice step.";
+      if (sessionPaused) return "Therapy session paused.";
+      if (sessionCompleted) return "Therapy session completed.";
+      return "Therapy session is running.";
     }
 
     if (latestResult.matchStatus === "exact") return "Excellent work.";
     if (latestResult.matchStatus === "close") return "Very close.";
     if (latestResult.matchStatus === "partial") return "Good try.";
     return "Try once more.";
-  }, [selectedMode, sessionStarted, sessionPaused, sessionCompleted, latestResult]);
+  }, [selectedMode, companionActive, pageError, sessionPaused, sessionCompleted, latestResult]);
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -190,7 +192,7 @@ const DevicePage = () => {
     if (!childData || !planData) {
       return {
         allowed: false,
-        reason: "Therapy plan is missing. Companion mode is available.",
+        reason: "Therapy mode is not ready yet. Companion mode is available.",
       };
     }
 
@@ -212,7 +214,7 @@ const DevicePage = () => {
     if (!inAllowedTime) {
       return {
         allowed: false,
-        reason: `Therapy mode is available only during ${
+        reason: `Therapy time is available only during ${
           planData.therapyStartTime || "--"
         } - ${planData.therapyEndTime || "--"}. Companion mode is available now.`,
       };
@@ -223,7 +225,7 @@ const DevicePage = () => {
     if (lockTherapyAfterLimit && todaySessionCount >= maxSessionsPerDay) {
       return {
         allowed: false,
-        reason: `Today's therapy session limit (${maxSessionsPerDay}) has been reached. Companion mode is available instead.`,
+        reason: `Today's therapy limit (${maxSessionsPerDay}) has been reached. Companion mode is still available.`,
       };
     }
 
@@ -254,13 +256,17 @@ const DevicePage = () => {
       const parentUid = childData.parentUid || auth.currentUser?.uid || "";
       if (parentUid) {
         const parentSnap = await getDoc(doc(db, "parents", parentUid));
-        if (parentSnap.exists()) setParent({ id: parentSnap.id, ...parentSnap.data() });
+        if (parentSnap.exists()) {
+          setParent({ id: parentSnap.id, ...parentSnap.data() });
+        }
       }
 
       const therapistUid = state?.therapistUid || childData.therapistUid || "";
       if (therapistUid) {
         const therapistSnap = await getDoc(doc(db, "therapists", therapistUid));
-        if (therapistSnap.exists()) setTherapist({ id: therapistSnap.id, ...therapistSnap.data() });
+        if (therapistSnap.exists()) {
+          setTherapist({ id: therapistSnap.id, ...therapistSnap.data() });
+        }
       }
 
       const levelId = state?.assignedLevelId || childData.assignedLevelId || "";
@@ -271,7 +277,9 @@ const DevicePage = () => {
       }
 
       const levelSnap = await getDoc(doc(db, "levels", levelId));
-      if (levelSnap.exists()) setLevelInfo({ id: levelSnap.id, ...levelSnap.data() });
+      if (levelSnap.exists()) {
+        setLevelInfo({ id: levelSnap.id, ...levelSnap.data() });
+      }
 
       const itemsRef = collection(db, "levels", levelId, "items");
       let itemDocs = [];
@@ -321,8 +329,8 @@ const DevicePage = () => {
       const therapyAccess = await evaluateTherapyAvailability(childData, loadedPlan);
       setTherapyModeAllowed(therapyAccess.allowed);
       setTherapyRestrictionMessage(therapyAccess.reason || "");
-      if (!therapyAccess.allowed) setSelectedMode("companion");
 
+      setSelectedMode("companion");
       setLoading(false);
     } catch (error) {
       console.error("Load page error:", error);
@@ -339,6 +347,54 @@ const DevicePage = () => {
     };
   }, []);
 
+  const activateCompanionMode = async () => {
+    try {
+      setSelectedMode("companion");
+      setPageError("");
+      setStage("Activating companion mode...");
+
+      const response = await fetch(`${SERVER}/companion-start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          childId: child?.id || "",
+          childName: child?.childName || "",
+          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
+          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
+          startTrack: 23,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to start companion mode");
+
+      setCompanionActive(true);
+      setStage(data.message || "Companion mode active");
+      setLatestResult(null);
+    } catch (error) {
+      console.error("Companion mode error:", error);
+      setCompanionActive(false);
+      setPageError(error.message || "Failed to start companion mode.");
+      setStage("Companion mode failed");
+    }
+  };
+
+  const stopCompanionMode = async () => {
+    try {
+      await fetch(`${SERVER}/companion-stop`, { method: "POST" });
+    } catch (error) {
+      console.error("Companion stop error:", error);
+    } finally {
+      setCompanionActive(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!loading && selectedMode === "companion" && !sessionStarted && !companionActive) {
+      activateCompanionMode();
+    }
+  }, [loading, selectedMode, sessionStarted, companionActive]);
+
   useEffect(() => {
     if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
     if (selectedMode !== "therapy") return;
@@ -348,12 +404,13 @@ const DevicePage = () => {
       stopPolling();
       stopTimer();
       setSessionCompleted(true);
+      setSessionStarted(false);
       setSessionPaused(false);
       setIsBusy(false);
       setIsListening(false);
       setToyPromptActive(false);
       setStage("Session duration limit reached");
-      setPageError("Session duration limit reached.");
+      setPageError("This therapy session reached the allowed time limit.");
     }
   }, [elapsedSeconds, sessionStarted, sessionCompleted, therapyPlanData, selectedMode]);
 
@@ -424,7 +481,7 @@ const DevicePage = () => {
   };
 
   const updateDailyUsage = async (childData, finalProgress) => {
-    if (!childData?.id || selectedMode !== "therapy") return;
+    if (!childData?.id) return;
 
     const todayKey = getTodayKey();
     const dailyUsageRef = doc(db, "children", childData.id, "dailyUsage", todayKey);
@@ -525,7 +582,7 @@ const DevicePage = () => {
           setIsListening(false);
           setToyPromptActive(false);
           setStage("Polling timeout");
-          setPageError("No response received in time.");
+          setPageError("No response was received in time.");
           setIsBusy(false);
           return;
         }
@@ -622,7 +679,7 @@ const DevicePage = () => {
 
       setTimeout(() => {
         triggerPractice(itemData, nextAttempt);
-      }, 1600);
+      }, 3200);
 
       return;
     }
@@ -636,6 +693,13 @@ const DevicePage = () => {
         setPageError("");
         setCurrentIndex((prev) => prev + 1);
         setIsBusy(false);
+
+        const nextItem = items[currentIndex + 1];
+        if (nextItem) {
+          setTimeout(() => {
+            triggerPractice(nextItem, 1);
+          }, 1400);
+        }
       }, 1800);
     } else if (updatedProgress) {
       await finishTherapySession(activeSessionId, updatedProgress);
@@ -644,6 +708,7 @@ const DevicePage = () => {
 
   const finishTherapySession = async (activeSessionId, finalProgress) => {
     setSessionCompleted(true);
+    setSessionStarted(false);
     setSessionPaused(false);
     setIsBusy(false);
     setIsListening(false);
@@ -676,134 +741,102 @@ const DevicePage = () => {
     } catch (error) {
       console.error("Summary save error:", error);
     }
+
+    setTimeout(async () => {
+      setSelectedMode("companion");
+      setCompanionActive(false);
+      setStage("Returning to companion mode...");
+    }, 1000);
   };
 
-  const startCompanionMode = async () => {
-    try {
-      setIsBusy(true);
-      setPageError("");
-      setStage("Starting companion mode...");
-
-      const response = await fetch(`${SERVER}/companion-start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          childId: child?.id || "",
-          childName: child?.childName || "",
-          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
-          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to start companion mode");
-
-      setStage(data.message || "Companion mode active");
-      setLatestResult(null);
-      setIsBusy(false);
-    } catch (error) {
-      console.error("Companion mode error:", error);
-      setPageError(error.message || "Failed to start companion mode.");
-      setStage("Companion mode failed");
-      setIsBusy(false);
-    }
-  };
-
-  const stopCompanionMode = async () => {
-    try {
-      await fetch(`${SERVER}/companion-stop`, { method: "POST" });
-    } catch (error) {
-      console.error("Companion stop error:", error);
-    }
-  };
-
-  const beginSession = async () => {
+  const beginTherapySession = async () => {
     setPageError("");
     setSessionBlocked(false);
 
-    if (selectedMode === "therapy") {
-      const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
-      setTherapyModeAllowed(therapyAccess.allowed);
-      setTherapyRestrictionMessage(therapyAccess.reason || "");
+    const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+    setTherapyModeAllowed(therapyAccess.allowed);
+    setTherapyRestrictionMessage(therapyAccess.reason || "");
 
-      if (!therapyAccess.allowed) {
-        setSelectedMode("companion");
-        setSessionBlocked(true);
-        setPageError(therapyAccess.reason);
-        setStage("Therapy mode unavailable");
-        return;
-      }
-
-      if (!items.length) {
-        setSessionBlocked(true);
-        setPageError("No items found in the assigned level.");
-        return;
-      }
-
-      setSessionStarted(true);
-      setSessionCompleted(false);
-      setSessionPaused(false);
-      setCurrentIndex(0);
-      setAttempt(1);
-      setElapsedSeconds(0);
-      setProgress({
-        attemptedItems: 0,
-        exact: 0,
-        close: 0,
-        partial: 0,
-        incorrect: 0,
-        overallScore: 0,
-      });
-      setLatestResult(null);
-      setStage("Therapy session started");
-      startTimer();
+    if (!therapyAccess.allowed) {
+      setSelectedMode("companion");
+      setSessionBlocked(true);
+      setPageError(therapyAccess.reason);
+      setStage("Therapy mode unavailable");
       return;
     }
 
+    if (!items.length) {
+      setSessionBlocked(true);
+      setPageError("No items found in the assigned level.");
+      return;
+    }
+
+    await stopCompanionMode();
+
+    setSelectedMode("therapy");
     setSessionStarted(true);
     setSessionCompleted(false);
     setSessionPaused(false);
+    setCurrentIndex(0);
+    setAttempt(1);
     setElapsedSeconds(0);
+    setSessionId("");
+    setProgress({
+      attemptedItems: 0,
+      exact: 0,
+      close: 0,
+      partial: 0,
+      incorrect: 0,
+      overallScore: 0,
+    });
     setLatestResult(null);
-    setStage("Ready for companion mode");
+    setStage("Therapy session started");
     startTimer();
-    await startCompanionMode();
+
+    const firstItem = items[0];
+    if (firstItem) {
+      setTimeout(() => {
+        triggerPractice(firstItem, 1);
+      }, 600);
+    }
   };
 
-  const pauseSession = () => {
+  const pauseSession = async () => {
     if (!sessionStarted || sessionCompleted || sessionPaused) return;
 
     stopPolling();
     stopTimer();
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset on pause error:", error);
+    }
+
     setSessionPaused(true);
     setIsBusy(false);
     setIsListening(false);
     setToyPromptActive(false);
-    setStage(selectedMode === "therapy" ? "Session paused" : "Companion mode paused");
+    setStage("Session paused");
   };
 
   const resumeSession = async () => {
     if (!sessionStarted || sessionCompleted || !sessionPaused) return;
+
     setSessionPaused(false);
     startTimer();
-    setStage(selectedMode === "therapy" ? "Session resumed" : "Companion mode resumed");
+    setStage("Session resumed");
+
+    if (currentItem) {
+      setTimeout(() => {
+        triggerPractice(currentItem, attempt || 1);
+      }, 800);
+    }
   };
 
   const endSession = async () => {
     stopPolling();
     stopTimer();
-
-    if (selectedMode === "companion") {
-      await stopCompanionMode();
-      setSessionStarted(false);
-      setSessionCompleted(true);
-      setSessionPaused(false);
-      setIsBusy(false);
-      setIsListening(false);
-      setToyPromptActive(false);
-      setStage("Companion mode ended");
-      return;
-    }
 
     if (!sessionId) {
       setSessionStarted(false);
@@ -813,6 +846,8 @@ const DevicePage = () => {
       setIsListening(false);
       setToyPromptActive(false);
       setStage("Session ended");
+      setSelectedMode("companion");
+      setCompanionActive(false);
       return;
     }
 
@@ -820,7 +855,7 @@ const DevicePage = () => {
     await finishTherapySession(sessionId, finalProgress);
   };
 
-  const restartSession = async () => {
+  const restartAll = async () => {
     stopPolling();
     stopTimer();
 
@@ -830,9 +865,7 @@ const DevicePage = () => {
       console.error("Practice reset error:", error);
     }
 
-    if (selectedMode === "companion") {
-      await stopCompanionMode();
-    }
+    await stopCompanionMode();
 
     setSessionId("");
     setSessionStarted(false);
@@ -856,53 +889,12 @@ const DevicePage = () => {
       overallScore: 0,
     });
     setPageError("");
+    setSelectedMode("companion");
+    setCompanionActive(false);
 
     const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
     setTherapyModeAllowed(therapyAccess.allowed);
     setTherapyRestrictionMessage(therapyAccess.reason || "");
-    if (!therapyAccess.allowed) setSelectedMode("companion");
-  };
-
-  const startCurrentItem = async () => {
-    if (selectedMode === "companion") {
-      await startCompanionMode();
-      return;
-    }
-
-    if (!currentItem || isBusy || sessionCompleted || sessionPaused) return;
-
-    if (!currentItem.text) {
-      setPageError("Current item text is missing.");
-      return;
-    }
-
-    if (!currentItem.mp3Track || Number(currentItem.mp3Track) < 1) {
-      setPageError("Current item MP3 track is missing or invalid.");
-      return;
-    }
-
-    setPageError("");
-    await triggerPractice(currentItem, attempt);
-  };
-
-  const handleModeChange = async (mode) => {
-    if (sessionStarted && !sessionCompleted) return;
-
-    if (mode === "therapy") {
-      const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
-      setTherapyModeAllowed(therapyAccess.allowed);
-      setTherapyRestrictionMessage(therapyAccess.reason || "");
-
-      if (!therapyAccess.allowed) {
-        setSelectedMode("companion");
-        setPageError(therapyAccess.reason);
-        return;
-      }
-    }
-
-    setPageError("");
-    setSelectedMode(mode);
-    setStage(mode === "therapy" ? "Ready for therapy session" : "Ready for companion mode");
   };
 
   if (loading) {
@@ -936,20 +928,26 @@ const DevicePage = () => {
           </div>
 
           <div className="strip-card timer-card">
-            <span>Session Timer</span>
-            <strong>{formatTime(elapsedSeconds)}</strong>
+            <span>{selectedMode === "therapy" ? "Session Timer" : "Companion"}</span>
+            <strong>
+              {selectedMode === "therapy"
+                ? formatTime(elapsedSeconds)
+                : companionActive
+                ? "Active"
+                : "Starting"}
+            </strong>
           </div>
         </div>
 
         {!therapyModeAllowed && (
           <div className="device-banner warning-banner">
-            <strong>Companion mode only.</strong> {therapyRestrictionMessage}
+            <strong>Therapy mode is resting.</strong> {therapyRestrictionMessage}
           </div>
         )}
 
         {pageError && (
           <div className="device-banner error-banner">
-            <strong>Error:</strong> {pageError}
+            <strong>Notice:</strong> {pageError}
           </div>
         )}
 
@@ -963,31 +961,9 @@ const DevicePage = () => {
                 <h1>Speech Practice Device</h1>
                 <p>
                   {selectedMode === "therapy"
-                    ? "A guided smart therapy experience for focused speech practice."
-                    : "A gentle companion experience with simple interaction."}
+                    ? "A guided smart therapy experience is running automatically."
+                    : "The device is in companion mode and listening for keywords."}
                 </p>
-              </div>
-
-              <div className="mode-switch">
-                <button
-                  type="button"
-                  className={`mode-btn ${selectedMode === "therapy" ? "active" : ""} ${
-                    !therapyModeAllowed ? "disabled" : ""
-                  }`}
-                  onClick={() => handleModeChange("therapy")}
-                  disabled={!therapyModeAllowed || (sessionStarted && !sessionCompleted)}
-                >
-                  Therapy
-                </button>
-
-                <button
-                  type="button"
-                  className={`mode-btn ${selectedMode === "companion" ? "active companion" : ""}`}
-                  onClick={() => handleModeChange("companion")}
-                  disabled={sessionStarted && !sessionCompleted}
-                >
-                  Companion
-                </button>
               </div>
             </div>
 
@@ -1000,7 +976,7 @@ const DevicePage = () => {
                       : "Friendly Interaction"}
                   </div>
                   <div className="status-chip secondary">
-                    {selectedMode === "therapy" ? currentItem?.type || "-" : "interactive"}
+                    {selectedMode === "therapy" ? currentItem?.type || "-" : "keyword listening"}
                   </div>
                 </div>
 
@@ -1037,80 +1013,71 @@ const DevicePage = () => {
                 ) : (
                   <div className="companion-center-card">
                     <div className="companion-emoji">🧸</div>
-                    <h2>Companion Interaction</h2>
-                    <p>Press start to activate companion mode on the device.</p>
+                    <h2>Companion Mode</h2>
+                    <p>{friendlyFeedback}</p>
+                    <div className="live-status-box">
+                      <span>Current Status</span>
+                      <strong>{stage}</strong>
+                    </div>
                   </div>
                 )}
 
                 <div className="control-row">
-                  {!sessionStarted ? (
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      onClick={beginSession}
-                      disabled={
-                        (selectedMode === "therapy" && (!therapyModeAllowed || items.length === 0)) ||
-                        sessionBlocked
-                      }
-                    >
-                      Start Session
-                    </button>
-                  ) : sessionPaused ? (
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      onClick={resumeSession}
-                      disabled={sessionCompleted}
-                    >
-                      Resume Session
-                    </button>
+                  {selectedMode === "companion" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={beginTherapySession}
+                        disabled={!therapyModeAllowed || sessionBlocked || !items.length}
+                      >
+                        Start Therapy Session
+                      </button>
+
+                      <button type="button" className="ghost-btn" onClick={restartAll}>
+                        Restart Device Flow
+                      </button>
+                    </>
                   ) : (
-                    <button
-                      type="button"
-                      className="primary-btn"
-                      onClick={startCurrentItem}
-                      disabled={
-                        selectedMode === "therapy"
-                          ? isBusy ||
-                            sessionCompleted ||
-                            sessionPaused ||
-                            !currentItem ||
-                            !currentItem.text ||
-                            !currentItem.mp3Track
-                          : isBusy || sessionCompleted || sessionPaused
-                      }
-                    >
-                      {selectedMode === "therapy"
-                        ? isBusy
-                          ? "Working..."
-                          : "Start Practice"
-                        : isBusy
-                        ? "Starting..."
-                        : "Start Companion"}
-                    </button>
+                    <>
+                      {sessionPaused ? (
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          onClick={resumeSession}
+                          disabled={sessionCompleted}
+                        >
+                          Resume Session
+                        </button>
+                      ) : (
+                        <button type="button" className="primary-btn" disabled>
+                          Therapy Running
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={pauseSession}
+                        disabled={!sessionStarted || sessionCompleted || sessionPaused}
+                      >
+                        Pause
+                      </button>
+
+                      <button
+                        type="button"
+                        className="danger-btn"
+                        onClick={endSession}
+                        disabled={!sessionStarted || sessionCompleted}
+                      >
+                        End
+                      </button>
+
+                      <button type="button" className="ghost-btn" onClick={restartAll}>
+                        Restart
+                      </button>
+                    </>
                   )}
-
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={pauseSession}
-                    disabled={!sessionStarted || sessionCompleted || sessionPaused}
-                  >
-                    Pause
-                  </button>
-
-                  <button
-                    type="button"
-                    className="danger-btn"
-                    onClick={endSession}
-                    disabled={!sessionStarted || sessionCompleted}
-                  >
-                    End
-                  </button>
-
-                  <button type="button" className="ghost-btn" onClick={restartSession}>
-                    Restart
-                  </button>
                 </div>
               </div>
 
@@ -1137,7 +1104,7 @@ const DevicePage = () => {
                   <div className="side-panel-card highlight">
                     <span className="side-label">Overall Progress</span>
                     <strong className="overall-score">{progress.overallScore}%</strong>
-                    <p>Overall session progress based on completed practice items.</p>
+                    <p>Overall therapy progress based on completed practice items.</p>
                   </div>
 
                   <div className="side-panel-card">
