@@ -170,10 +170,45 @@ const TherapistPatients = () => {
         where("therapistUid", "==", user.uid)
       );
       const assignedSnap = await getDocs(assignedQuery);
-      const assignedData = assignedSnap.docs.map((d) => ({
+      const assignedChildren = assignedSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
       }));
+
+      const sessionsSnap = await getDocs(collection(db, "sessions"));
+      const allSessions = sessionsSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      const assignedData = assignedChildren.map((child) => {
+        const childSessions = allSessions.filter(
+          (session) => session.childId === child.id
+        );
+
+        const validScoreSessions = childSessions.filter(
+          (session) =>
+            session.overallScore !== undefined &&
+            session.overallScore !== null
+        );
+
+        const calculatedProgress =
+          validScoreSessions.length > 0
+            ? Math.round(
+                validScoreSessions.reduce(
+                  (sum, session) => sum + Number(session.overallScore || 0),
+                  0
+                ) / validScoreSessions.length
+              )
+            : Number(child.overallProgress || 0);
+
+        return {
+          ...child,
+          overallProgress: calculatedProgress,
+          totalSessionsCompleted: childSessions.length,
+        };
+      });
+
       setAssignedPatients(assignedData);
 
       const childrenSnap = await getDocs(collection(db, "children"));
@@ -221,7 +256,63 @@ const TherapistPatients = () => {
       const reportSnap = await getDoc(
         doc(db, "children", freshPatient.id, "report", "main")
       );
-      setReportData(reportSnap.exists() ? reportSnap.data() : null);
+      const reportDocData = reportSnap.exists() ? reportSnap.data() : null;
+
+      const sessionsSnap = await getDocs(
+        query(collection(db, "sessions"), where("childId", "==", freshPatient.id))
+      );
+
+      const childSessions = sessionsSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+
+      const validScoreSessions = childSessions.filter(
+        (session) =>
+          session.overallScore !== undefined &&
+          session.overallScore !== null
+      );
+
+      const calculatedProgress =
+        validScoreSessions.length > 0
+          ? Math.round(
+              validScoreSessions.reduce(
+                (sum, session) => sum + Number(session.overallScore || 0),
+                0
+              ) / validScoreSessions.length
+            )
+          : Number(reportDocData?.overallProgress || 0);
+
+      const calculatedCompletedItems = childSessions.reduce(
+        (sum, session) => sum + Number(session.attemptedItems || 0),
+        0
+      );
+
+      const calculatedTotalItems = childSessions.reduce(
+        (sum, session) =>
+          sum +
+          Number(
+            session.totalItems ||
+              session.totalLevelItems ||
+              session.assignedItemsCount ||
+              0
+          ),
+        0
+      );
+
+      setReportData({
+        ...reportDocData,
+        overallProgress: calculatedProgress,
+        totalSessionsCompleted: childSessions.length,
+        totalCompletedItems:
+          calculatedCompletedItems > 0
+            ? calculatedCompletedItems
+            : Number(reportDocData?.totalCompletedItems || 0),
+        totalItems:
+          calculatedTotalItems > 0
+            ? calculatedTotalItems
+            : Number(reportDocData?.totalItems || 0),
+      });
 
       const timelineQuery = query(
         collection(db, "children", freshPatient.id, "timeline"),
@@ -371,14 +462,18 @@ const TherapistPatients = () => {
     const totalAssigned = assignedPatients.length;
     const withDevice = assignedPatients.filter((p) => p.deviceAssigned).length;
     const withLevel = assignedPatients.filter((p) => p.assignedLevelId).length;
-    const progressValues = assignedPatients.map((p) =>
-      Number(p.overallProgress || 0)
+
+    const patientsWithProgress = assignedPatients.filter(
+      (p) => Number(p.overallProgress || 0) > 0
     );
+
     const avgProgress =
-      progressValues.length > 0
+      patientsWithProgress.length > 0
         ? Math.round(
-            progressValues.reduce((sum, val) => sum + val, 0) /
-              progressValues.length
+            patientsWithProgress.reduce(
+              (sum, patient) => sum + Number(patient.overallProgress || 0),
+              0
+            ) / patientsWithProgress.length
           )
         : 0;
 

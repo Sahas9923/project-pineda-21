@@ -22,9 +22,9 @@ const ChildInfo = () => {
 
   const [childrenList, setChildrenList] = useState([]);
   const [selectedChild, setSelectedChild] = useState(null);
-  const [therapyPlan, setTherapyPlan] = useState(null);
   const [reportData, setReportData] = useState(null);
   const [recentTimeline, setRecentTimeline] = useState([]);
+  const [therapistProfile, setTherapistProfile] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [showAddChildForm, setShowAddChildForm] = useState(false);
@@ -155,9 +155,9 @@ const ChildInfo = () => {
         setSelectedChild(children[0]);
       } else {
         setSelectedChild(null);
-        setTherapyPlan(null);
         setReportData(null);
         setRecentTimeline([]);
+        setTherapistProfile(null);
       }
     } catch (error) {
       console.error("Error fetching children:", error);
@@ -167,46 +167,175 @@ const ChildInfo = () => {
     }
   };
 
-  const handleViewChild = async (child) => {
+  const fetchLatestTherapistProfile = async (therapistUid, childFallbackData = {}) => {
+    if (!therapistUid) {
+      setTherapistProfile(null);
+      return null;
+    }
+
     try {
-      setSelectedChild(child);
+      const therapistRef = doc(db, "therapists", therapistUid);
+      const therapistSnap = await getDoc(therapistRef);
 
-      const planSnap = await getDoc(doc(db, "therapyPlans", child.id));
-      setTherapyPlan(planSnap.exists() ? planSnap.data() : null);
+      if (therapistSnap.exists()) {
+        const therapistData = therapistSnap.data();
 
-      const reportSnap = await getDoc(
-        doc(db, "children", child.id, "report", "main")
-      );
-      setReportData(reportSnap.exists() ? reportSnap.data() : null);
+        const mergedTherapist = {
+          therapistUid,
+          therapistName:
+            therapistData.name || childFallbackData.therapistName || "Not assigned",
+          therapistEmail:
+            therapistData.email || childFallbackData.therapistEmail || "N/A",
+          therapistContact:
+            therapistData.contact || childFallbackData.therapistContact || "N/A",
+          therapistId:
+            therapistData.therapistId || childFallbackData.therapistId || "N/A",
+          therapistImageUrl:
+            therapistData.imageUrl || childFallbackData.therapistImageUrl || "",
+          slmcNumber: therapistData.slmcNumber || "N/A",
+          experience: therapistData.experience || "N/A",
+          specialization: therapistData.specialization || "N/A",
+          availableOnline: !!therapistData.availableOnline,
+        };
 
-      const timelineSnap = await getDocs(
-        collection(db, "children", child.id, "timeline")
-      );
+        setTherapistProfile(mergedTherapist);
+        return mergedTherapist;
+      }
 
-      const timelineData = timelineSnap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => {
-          const aTime = a.createdAt?.seconds || 0;
-          const bTime = b.createdAt?.seconds || 0;
-          return bTime - aTime;
-        })
-        .slice(0, 5);
+      const fallbackTherapist = {
+        therapistUid,
+        therapistName: childFallbackData.therapistName || "Not assigned",
+        therapistEmail: childFallbackData.therapistEmail || "N/A",
+        therapistContact: childFallbackData.therapistContact || "N/A",
+        therapistId: childFallbackData.therapistId || "N/A",
+        therapistImageUrl: childFallbackData.therapistImageUrl || "",
+        slmcNumber: "N/A",
+        experience: "N/A",
+        specialization: "N/A",
+        availableOnline: false,
+      };
 
-      setRecentTimeline(timelineData);
-      setEditChildForm({
-        childName: child.childName || "",
-        age: child.age || "",
-        gender: child.gender || "",
-      });
-      setEditChildImagePreview(child.childImageUrl || "");
-      setEditChildImageFile(null);
-      setEditingChild(false);
-      setShowDetailsModal(true);
+      setTherapistProfile(fallbackTherapist);
+      return fallbackTherapist;
     } catch (error) {
-      console.error("Error loading child details:", error);
-      showMessage("❌ Failed to load child details.");
+      console.error("Error fetching therapist profile:", error);
+
+      const fallbackTherapist = {
+        therapistUid,
+        therapistName: childFallbackData.therapistName || "Not assigned",
+        therapistEmail: childFallbackData.therapistEmail || "N/A",
+        therapistContact: childFallbackData.therapistContact || "N/A",
+        therapistId: childFallbackData.therapistId || "N/A",
+        therapistImageUrl: childFallbackData.therapistImageUrl || "",
+        slmcNumber: "N/A",
+        experience: "N/A",
+        specialization: "N/A",
+        availableOnline: false,
+      };
+
+      setTherapistProfile(fallbackTherapist);
+      return fallbackTherapist;
     }
   };
+
+  const handleViewChild = async (child) => {
+  try {
+    setSelectedChild(child);
+
+    // GET CHILD SESSIONS FROM TOP-LEVEL "sessions" COLLECTION
+    const sessionsQuery = query(
+      collection(db, "sessions"),
+      where("childId", "==", child.id)
+    );
+
+    const sessionsSnapshot = await getDocs(sessionsQuery);
+
+    const sessions = sessionsSnapshot.docs.map((sessionDoc) => ({
+      id: sessionDoc.id,
+      ...sessionDoc.data(),
+    }));
+
+    const sortedSessions = [...sessions].sort((a, b) => {
+      const aTime = a.startedAt?.seconds || 0;
+      const bTime = b.startedAt?.seconds || 0;
+      return aTime - bTime;
+    });
+
+    let progressPayload = null;
+
+    if (sortedSessions.length > 0) {
+      const totalScore = sortedSessions.reduce(
+        (sum, session) => sum + Number(session.overallScore || 0),
+        0
+      );
+
+      const avgProgress = Math.round(totalScore / sortedSessions.length);
+      const latestSession = sortedSessions[sortedSessions.length - 1];
+
+      const totalCompletedItems = sortedSessions.reduce(
+        (sum, session) => sum + Number(session.attemptedItems || 0),
+        0
+      );
+
+      const totalItems = sortedSessions.reduce(
+        (sum, session) =>
+          sum +
+          Number(
+            session.totalItems ||
+              session.totalLevelItems ||
+              session.assignedItemsCount ||
+              session.attemptedItems ||
+              0
+          ),
+        0
+      );
+
+      progressPayload = {
+        overallProgress: avgProgress,
+        currentMode:
+          latestSession.sessionMode ||
+          latestSession.mode ||
+          latestSession.currentMode ||
+          "Therapy",
+        totalCompletedItems,
+        totalItems,
+      };
+    }
+
+    setReportData(progressPayload);
+
+    const timelineSnap = await getDocs(
+      collection(db, "children", child.id, "timeline")
+    );
+
+    const timelineData = timelineSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => {
+        const aTime = a.createdAt?.seconds || 0;
+        const bTime = b.createdAt?.seconds || 0;
+        return bTime - aTime;
+      })
+      .slice(0, 5);
+
+    setRecentTimeline(timelineData);
+
+    await fetchLatestTherapistProfile(child.therapistUid, child);
+
+    setEditChildForm({
+      childName: child.childName || "",
+      age: child.age || "",
+      gender: child.gender || "",
+    });
+
+    setEditChildImagePreview(child.childImageUrl || "");
+    setEditChildImageFile(null);
+    setEditingChild(false);
+    setShowDetailsModal(true);
+  } catch (error) {
+    console.error("Error loading child details:", error);
+    showMessage("❌ Failed to load child details.");
+  }
+};
 
   const handleChildFormChange = (e) => {
     const { name, value } = e.target;
@@ -756,7 +885,7 @@ const ChildInfo = () => {
           >
             <div className="details-modal-header">
               <div>
-                <h2>Child Full Information</h2>
+                <h2>Child Information</h2>
                 <p>View complete child details and update profile information.</p>
               </div>
 
@@ -838,26 +967,34 @@ const ChildInfo = () => {
                       <strong>Completed Items:</strong>{" "}
                       {reportData?.totalCompletedItems ?? 0}/
                       {reportData?.totalItems ?? 0}
-                    </p>
+                    </p>    
                   </div>
 
                   <div className="info-card">
                     <h3>Assigned Therapist</h3>
                     <p>
                       <strong>Name:</strong>{" "}
-                      {selectedChild.therapistName || "Not assigned"}
+                      {therapistProfile?.therapistName || selectedChild.therapistName || "Not assigned"}
                     </p>
                     <p>
                       <strong>Therapist ID:</strong>{" "}
-                      {selectedChild.therapistId || "N/A"}
+                      {therapistProfile?.therapistId || selectedChild.therapistId || "N/A"}
                     </p>
                     <p>
                       <strong>Email:</strong>{" "}
-                      {selectedChild.therapistEmail || "N/A"}
+                      {therapistProfile?.therapistEmail || selectedChild.therapistEmail || "N/A"}
                     </p>
                     <p>
                       <strong>Contact:</strong>{" "}
-                      {selectedChild.therapistContact || "N/A"}
+                      {therapistProfile?.therapistContact || selectedChild.therapistContact || "N/A"}
+                    </p>
+                    <p>
+                      <strong>SLMC Number:</strong>{" "}
+                      {therapistProfile?.slmcNumber || "N/A"}
+                    </p>
+                    <p>
+                      <strong>Specialization:</strong>{" "}
+                      {therapistProfile?.specialization || "N/A"}
                     </p>
                   </div>
 
@@ -902,57 +1039,6 @@ const ChildInfo = () => {
                     <p>
                       <strong>Status:</strong>{" "}
                       {selectedChild.deviceStatus || "N/A"}
-                    </p>
-                  </div>
-
-                  <div className="info-card">
-                    <h3>Therapy Plan</h3>
-                    <p>
-                      <strong>Maximum Sessions / Day:</strong>{" "}
-                      {therapyPlan?.maxSessionsPerDay ?? "N/A"}
-                    </p>
-                    <p>
-                      <strong>Session Duration:</strong>{" "}
-                      {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins
-                    </p>
-                    <p>
-                      <strong>Therapy Time:</strong>{" "}
-                      {therapyPlan?.therapyStartTime || "N/A"} -{" "}
-                      {therapyPlan?.therapyEndTime || "N/A"}
-                    </p>
-                    <p>
-                      <strong>After Limit:</strong>{" "}
-                      {therapyPlan?.fallbackMode || "companion"}
-                    </p>
-                    <p>
-                      <strong>Rule:</strong>{" "}
-                      {therapyPlan?.lockTherapyAfterLimit
-                        ? "Therapy mode locks after daily limit"
-                        : "No lock rule"}
-                    </p>
-                  </div>
-
-                  <div className="info-card">
-                    <h3>Therapist Recommendation</h3>
-                    <p>
-                      <strong>Summary:</strong>{" "}
-                      {reportData?.therapistSummary || "No summary yet"}
-                    </p>
-                    <p>
-                      <strong>Recommendation:</strong>{" "}
-                      {reportData?.overallRecommendation || "No recommendation yet"}
-                    </p>
-                    <p>
-                      <strong>Home Advice:</strong>{" "}
-                      {reportData?.homeAdvice || "No home advice yet"}
-                    </p>
-                    <p>
-                      <strong>Strongest Area:</strong>{" "}
-                      {reportData?.strongestArea || "N/A"}
-                    </p>
-                    <p>
-                      <strong>Support Area:</strong>{" "}
-                      {reportData?.supportArea || "N/A"}
                     </p>
                   </div>
                 </div>

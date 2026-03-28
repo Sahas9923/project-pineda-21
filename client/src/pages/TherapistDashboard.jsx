@@ -12,8 +12,22 @@ import {
   where,
 } from "firebase/firestore";
 
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from "recharts";
+
 const TherapistDashboard = () => {
   const [loading, setLoading] = useState(true);
+  const [pageMessage, setPageMessage] = useState("");
+
   const [therapistData, setTherapistData] = useState({
     name: "Therapist",
     email: "",
@@ -28,11 +42,6 @@ const TherapistDashboard = () => {
 
   const [patients, setPatients] = useState([]);
   const [reports, setReports] = useState([]);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [levelFilter, setLevelFilter] = useState("all");
-  const [progressFilter, setProgressFilter] = useState("all");
-  const [selectedPatient, setSelectedPatient] = useState(null);
-  const [pageMessage, setPageMessage] = useState("");
 
   useEffect(() => {
     fetchDashboardData();
@@ -71,16 +80,24 @@ const TherapistDashboard = () => {
         collection(db, "children"),
         where("therapistUid", "==", user.uid)
       );
-
       const childSnapshot = await getDocs(childQuery);
+      const childDocs = childSnapshot.docs.map((childDoc) => ({
+        id: childDoc.id,
+        ...childDoc.data(),
+      }));
+
+      const sessionsSnapshot = await getDocs(collection(db, "sessions"));
+      const allSessions = sessionsSnapshot.docs.map((sessionDoc) => ({
+        id: sessionDoc.id,
+        ...sessionDoc.data(),
+      }));
 
       const patientList = [];
       const reportList = [];
 
-      for (const childDoc of childSnapshot.docs) {
-        const child = { id: childDoc.id, ...childDoc.data() };
-
+      for (const child of childDocs) {
         let reportData = null;
+
         try {
           const reportSnap = await getDoc(
             doc(db, "children", child.id, "report", "main")
@@ -92,20 +109,71 @@ const TherapistDashboard = () => {
           console.log("No report found for child:", child.id);
         }
 
+        const childSessions = allSessions.filter(
+          (session) => session.childId === child.id
+        );
+
+        const sessionCount = childSessions.length;
+
+        const sessionAverageProgress =
+          sessionCount > 0
+            ? Math.round(
+                childSessions.reduce(
+                  (sum, session) => sum + Number(session.overallScore || 0),
+                  0
+                ) / sessionCount
+              )
+            : 0;
+
+        const totalCompletedItemsFromSessions = childSessions.reduce(
+          (sum, session) => sum + Number(session.attemptedItems || 0),
+          0
+        );
+
+        const totalItemsFromSessions = childSessions.reduce(
+          (sum, session) =>
+            sum +
+            Number(
+              session.totalItems ||
+                session.totalLevelItems ||
+                session.assignedItemsCount ||
+                0
+            ),
+          0
+        );
+
+        const latestSession =
+          childSessions.length > 0
+            ? [...childSessions].sort((a, b) => {
+                const aTime = a.startedAt?.seconds || 0;
+                const bTime = b.startedAt?.seconds || 0;
+                return bTime - aTime;
+              })[0]
+            : null;
+
         const patientItem = {
           ...child,
-          overallProgress: Number(reportData?.overallProgress || 0),
-          currentMode: reportData?.currentMode || "Therapy",
-          totalCompletedItems: Number(reportData?.totalCompletedItems || 0),
-          totalItems: Number(reportData?.totalItems || 0),
-          strongestArea: reportData?.strongestArea || "",
-          supportArea: reportData?.supportArea || "",
+          overallProgress:
+            sessionAverageProgress > 0
+              ? sessionAverageProgress
+              : Number(reportData?.overallProgress || 0),
+          currentMode:
+            latestSession?.sessionMode ||
+            latestSession?.mode ||
+            latestSession?.currentMode ||
+            reportData?.currentMode ||
+            "Therapy",
+          totalCompletedItems:
+            totalCompletedItemsFromSessions > 0
+              ? totalCompletedItemsFromSessions
+              : Number(reportData?.totalCompletedItems || 0),
+          totalItems:
+            totalItemsFromSessions > 0
+              ? totalItemsFromSessions
+              : Number(reportData?.totalItems || 0),
           reportStatus:
-            reportData?.reportStatus ||
-            (reportData ? "Completed" : "Pending"),
-          therapistSummary: reportData?.therapistSummary || "",
-          overallRecommendation: reportData?.overallRecommendation || "",
-          homeAdvice: reportData?.homeAdvice || "",
+            reportData?.reportStatus || (reportData ? "Completed" : "Pending"),
+          sessionCount,
         };
 
         patientList.push(patientItem);
@@ -130,79 +198,138 @@ const TherapistDashboard = () => {
     }
   };
 
-  const levelOptions = useMemo(() => {
-    const names = patients
-      .map((p) => p.assignedLevelName)
-      .filter(Boolean)
-      .filter((value, index, self) => self.indexOf(value) === index);
-
-    return names;
-  }, [patients]);
-
-  const filteredPatients = useMemo(() => {
-    return patients.filter((patient) => {
-      const searchValue = searchTerm.toLowerCase();
-
-      const matchesSearch =
-        (patient.childName || "").toLowerCase().includes(searchValue) ||
-        (patient.childCode || "").toLowerCase().includes(searchValue) ||
-        (patient.parentName || "").toLowerCase().includes(searchValue) ||
-        (patient.parentEmail || "").toLowerCase().includes(searchValue);
-
-      const matchesLevel =
-        levelFilter === "all"
-          ? true
-          : (patient.assignedLevelName || "") === levelFilter;
-
-      let matchesProgress = true;
-      if (progressFilter === "low") {
-        matchesProgress = Number(patient.overallProgress) < 40;
-      } else if (progressFilter === "medium") {
-        matchesProgress =
-          Number(patient.overallProgress) >= 40 &&
-          Number(patient.overallProgress) < 75;
-      } else if (progressFilter === "high") {
-        matchesProgress = Number(patient.overallProgress) >= 75;
-      }
-
-      return matchesSearch && matchesLevel && matchesProgress;
-    });
-  }, [patients, searchTerm, levelFilter, progressFilter]);
-
   const stats = useMemo(() => {
     const totalPatients = patients.length;
+
     const activePlans = patients.filter(
       (p) => p.assignedLevelId || p.assignedLevelName
     ).length;
+
+    const assignedDevices = patients.filter((p) => p.deviceAssigned).length;
+
     const pendingReports = reports.filter(
       (r) => r.reportStatus !== "Completed"
     ).length;
+
+    const patientsWithProgress = patients.filter(
+      (patient) => Number(patient.overallProgress || 0) > 0
+    );
+
     const avgProgress =
-      totalPatients > 0
+      patientsWithProgress.length > 0
         ? Math.round(
-            patients.reduce(
+            patientsWithProgress.reduce(
               (sum, patient) => sum + Number(patient.overallProgress || 0),
               0
-            ) / totalPatients
+            ) / patientsWithProgress.length
           )
         : 0;
 
     return {
       totalPatients,
       activePlans,
+      assignedDevices,
       pendingReports,
       avgProgress,
     };
   }, [patients, reports]);
 
+  const progressTrendData = useMemo(() => {
+    if (patients.length === 0) {
+      return [
+        { name: "P1", progress: 0 },
+        { name: "P2", progress: 0 },
+        { name: "P3", progress: 0 },
+        { name: "P4", progress: 0 },
+        { name: "P5", progress: 0 },
+      ];
+    }
+
+    return patients
+      .slice()
+      .sort(
+        (a, b) => Number(b.overallProgress || 0) - Number(a.overallProgress || 0)
+      )
+      .slice(0, 7)
+      .map((patient, index) => ({
+        name: patient.childName
+          ? patient.childName.split(" ")[0]
+          : `P${index + 1}`,
+        progress: Number(patient.overallProgress || 0),
+      }));
+  }, [patients]);
+
+  const levelDistributionData = useMemo(() => {
+    const levelMap = {};
+
+    patients.forEach((patient) => {
+      const level = patient.assignedLevelName || "Not Assigned";
+      levelMap[level] = (levelMap[level] || 0) + 1;
+    });
+
+    const result = Object.entries(levelMap).map(([name, count]) => ({
+      name,
+      count,
+    }));
+
+    return result.length > 0
+      ? result
+      : [
+          { name: "No Level", count: 0 },
+          { name: "Level A", count: 0 },
+        ];
+  }, [patients]);
+
   const reminders = useMemo(() => {
     return [
-      `${stats.pendingReports} pending reports need attention.`,
-      `${stats.totalPatients} assigned patients currently under review.`,
-      `${patients.filter((p) => !p.deviceAssigned).length} children do not have an assigned device.`,
-      `${patients.filter((p) => Number(p.overallProgress) < 40).length} children may need extra support.`,
+      `${stats.pendingReports} reports still need review.`,
+      `${stats.totalPatients} patients are currently assigned to you.`,
+      `${patients.filter((p) => !p.deviceAssigned).length} children do not have assigned devices.`,
+      `${patients.filter((p) => Number(p.overallProgress) < 40).length} children may need additional support.`,
     ];
   }, [stats, patients]);
+
+  const quickOverview = useMemo(() => {
+    return [
+      {
+        title: "Assigned Patients",
+        value: stats.totalPatients,
+        note: "Children currently linked to your profile",
+        icon: "👶",
+      },
+      {
+        title: "Average Progress",
+        value: `${stats.avgProgress}%`,
+        note: "Average from child session scores",
+        icon: "📈",
+      },
+      {
+        title: "Pending Reports",
+        value: stats.pendingReports,
+        note: "Reports that still need therapist attention",
+        icon: "📝",
+      },
+      {
+        title: "Device Coverage",
+        value: `${stats.assignedDevices}/${stats.totalPatients}`,
+        note: "Assigned devices across current children",
+        icon: "🧸",
+      },
+    ];
+  }, [stats]);
+
+  if (loading) {
+    return (
+      <div className="therapist-dashboard-page">
+        <TherapistNavbar />
+        <div className="therapist-dashboard-container">
+          <div className="dashboard-loading-card">
+            Loading therapist dashboard...
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="therapist-dashboard-page">
@@ -211,26 +338,30 @@ const TherapistDashboard = () => {
       <div className="therapist-dashboard-container">
         {pageMessage && <div className="dashboard-message">{pageMessage}</div>}
 
-        {loading ? (
-          <div className="dashboard-loading-card">
-            Loading therapist dashboard...
-          </div>
-        ) : (
+        {!pageMessage && (
           <>
             <section className="dashboard-top-grid">
               <div className="dashboard-hero-card">
                 <span className="hero-badge">🧑‍⚕️ Therapist Dashboard</span>
                 <h1>Welcome back, {therapistData.name}</h1>
                 <p>
-                  Manage patients, monitor therapy progress, review reports, and
-                  keep your professional details updated from one modern
-                  dashboard.
+                  A modern overview of your therapy work, patient progress,
+                  report activity, and professional profile — all in one place.
                 </p>
 
-                <div className="hero-quick-actions">
-                  <button className="hero-btn primary-btn">View Patients</button>
-                  <button className="hero-btn secondary-btn">Review Reports</button>
-                  <button className="hero-btn secondary-btn">View Profile</button>
+                <div className="hero-stats-inline">
+                  <div className="hero-mini-stat">
+                    <span>Patients</span>
+                    <strong>{stats.totalPatients}</strong>
+                  </div>
+                  <div className="hero-mini-stat">
+                    <span>Average Progress</span>
+                    <strong>{stats.avgProgress}%</strong>
+                  </div>
+                  <div className="hero-mini-stat">
+                    <span>Pending Reports</span>
+                    <strong>{stats.pendingReports}</strong>
+                  </div>
                 </div>
               </div>
 
@@ -248,7 +379,7 @@ const TherapistDashboard = () => {
 
                   <div className="profile-summary-text">
                     <h3>{therapistData.name}</h3>
-                    <p>{therapistData.email || "No email"}</p>
+                    <p>{therapistData.email || "No email added"}</p>
                     <span>{therapistData.therapistId || "No ID"}</span>
                   </div>
                 </div>
@@ -267,7 +398,7 @@ const TherapistDashboard = () => {
                     <span>{therapistData.experience || "Not added"}</span>
                   </div>
                   <div className="summary-item">
-                    <strong>Online Status</strong>
+                    <strong>Status</strong>
                     <span>
                       {therapistData.availableOnline
                         ? "Available Online"
@@ -278,286 +409,109 @@ const TherapistDashboard = () => {
               </div>
             </section>
 
-            <section className="stats-grid">
-              <div className="stat-card">
-                <div className="stat-icon">👶</div>
-                <div>
-                  <h3>{stats.totalPatients}</h3>
-                  <p>Assigned Patients</p>
+            <section className="overview-grid">
+              {quickOverview.map((item, index) => (
+                <div className="overview-card" key={index}>
+                  <div className="overview-icon">{item.icon}</div>
+                  <div className="overview-content">
+                    <span>{item.title}</span>
+                    <strong>{item.value}</strong>
+                    <p>{item.note}</p>
+                  </div>
+                </div>
+              ))}
+            </section>
+
+            <section className="charts-grid two-chart-grid">
+              <div className="chart-card chart-card-large">
+                <div className="section-head">
+                  <h2>Patient Progress Overview</h2>
+                  <p>Average progress across assigned children from sessions.</p>
+                </div>
+
+                <div className="chart-wrap">
+                  <ResponsiveContainer width="100%" height={320}>
+                    <AreaChart data={progressTrendData}>
+                      <defs>
+                        <linearGradient
+                          id="progressOverviewFill"
+                          x1="0"
+                          y1="0"
+                          x2="0"
+                          y2="1"
+                        >
+                          <stop
+                            offset="5%"
+                            stopColor="#2ec4b6"
+                            stopOpacity={0.45}
+                          />
+                          <stop
+                            offset="95%"
+                            stopColor="#2ec4b6"
+                            stopOpacity={0.05}
+                          />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="4 4" vertical={false} />
+                      <XAxis dataKey="name" />
+                      <YAxis domain={[0, 100]} />
+                      <Tooltip />
+                      <Area
+                        type="monotone"
+                        dataKey="progress"
+                        stroke="#2ec4b6"
+                        fill="url(#progressOverviewFill)"
+                        strokeWidth={3}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="stat-card">
-                <div className="stat-icon">📘</div>
-                <div>
-                  <h3>{stats.activePlans}</h3>
-                  <p>Active Therapy Plans</p>
+              <div className="chart-card chart-card-large">
+                <div className="section-head">
+                  <h2>Level Distribution</h2>
+                  <p>How children are spread across assigned levels.</p>
                 </div>
-              </div>
 
-              <div className="stat-card">
-                <div className="stat-icon">📝</div>
-                <div>
-                  <h3>{stats.pendingReports}</h3>
-                  <p>Pending Reports</p>
-                </div>
-              </div>
-
-              <div className="stat-card">
-                <div className="stat-icon">📈</div>
-                <div>
-                  <h3>{stats.avgProgress}%</h3>
-                  <p>Average Progress</p>
+                <div className="chart-wrap">
+                  <ResponsiveContainer width="100%" height={320}>
+                    <BarChart data={levelDistributionData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar
+                        dataKey="count"
+                        radius={[10, 10, 0, 0]}
+                        fill="#42c2ff"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </section>
 
-            <section className="dashboard-main-grid">
-              <div className="patients-section-card">
-                <div className="section-head">
-                  <div>
-                    <h2>Assigned Patients</h2>
-                    <p>Search, filter, and review child therapy progress.</p>
-                  </div>
+            <section className="bottom-grid single-bottom-grid">
+              <div className="side-card">
+                <div className="section-head small-head">
+                  <h2>Reminders</h2>
+                  <p>Quick therapist action points.</p>
                 </div>
 
-                <div className="filters-row">
-                  <input
-                    type="text"
-                    placeholder="Search by child name, code, parent..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                  />
-
-                  <select
-                    value={levelFilter}
-                    onChange={(e) => setLevelFilter(e.target.value)}
-                  >
-                    <option value="all">All Levels</option>
-                    {levelOptions.map((level) => (
-                      <option key={level} value={level}>
-                        {level}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={progressFilter}
-                    onChange={(e) => setProgressFilter(e.target.value)}
-                  >
-                    <option value="all">All Progress</option>
-                    <option value="low">Below 40%</option>
-                    <option value="medium">40% - 74%</option>
-                    <option value="high">75% and above</option>
-                  </select>
-                </div>
-
-                {filteredPatients.length === 0 ? (
-                  <div className="empty-state-box">
-                    No matching patients found.
-                  </div>
-                ) : (
-                  <div className="patient-cards-grid">
-                    {filteredPatients.map((patient) => (
-                      <div
-                        className="patient-card"
-                        key={patient.id}
-                        onClick={() => setSelectedPatient(patient)}
-                      >
-                        <div className="patient-card-top">
-                          {patient.childImageUrl ? (
-                            <img
-                              src={patient.childImageUrl}
-                              alt={patient.childName}
-                              className="patient-image"
-                            />
-                          ) : (
-                            <div className="patient-image-placeholder">🧒</div>
-                          )}
-
-                          <div className="patient-card-top-text">
-                            <h3>{patient.childName || "Child"}</h3>
-                            <p>{patient.childCode || "N/A"}</p>
-                          </div>
-                        </div>
-
-                        <div className="patient-mini-grid">
-                          <p>
-                            <strong>Age</strong>
-                            <span>{patient.age || "N/A"}</span>
-                          </p>
-                          <p>
-                            <strong>Parent</strong>
-                            <span>{patient.parentName || "N/A"}</span>
-                          </p>
-                          <p>
-                            <strong>Level</strong>
-                            <span>{patient.assignedLevelName || "Not assigned"}</span>
-                          </p>
-                          <p>
-                            <strong>Device</strong>
-                            <span>
-                              {patient.deviceAssigned ? "Assigned" : "Not assigned"}
-                            </span>
-                          </p>
-                        </div>
-
-                        <div className="progress-block">
-                          <div className="progress-label-row">
-                            <span>Progress</span>
-                            <strong>{patient.overallProgress || 0}%</strong>
-                          </div>
-                          <div className="progress-bar-bg">
-                            <div
-                              className="progress-bar-fill"
-                              style={{
-                                width: `${Math.min(
-                                  Number(patient.overallProgress || 0),
-                                  100
-                                )}%`,
-                              }}
-                            ></div>
-                          </div>
-                        </div>
-
-                        <div className="patient-card-actions">
-                          <button type="button">View Details</button>
-                          <button type="button">Write Report</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="sidebar-column">
-                <div className="side-card">
-                  <div className="section-head small-head">
-                    <h2>Reminders</h2>
-                  </div>
-
-                  <div className="reminders-list">
-                    {reminders.map((item, index) => (
-                      <div className="reminder-item" key={index}>
-                        <span className="reminder-dot"></span>
-                        <p>{item}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="side-card">
-                  <div className="section-head small-head">
-                    <h2>Report Overview</h2>
-                  </div>
-
-                  <div className="report-summary-list">
-                    {reports.length === 0 ? (
-                      <p className="empty-side-text">No reports yet.</p>
-                    ) : (
-                      reports.slice(0, 5).map((report, index) => (
-                        <div className="report-summary-item" key={index}>
-                          <div>
-                            <h4>{report.childName}</h4>
-                            <p>{report.levelName}</p>
-                          </div>
-                          <span
-                            className={`status-badge ${
-                              report.reportStatus === "Completed"
-                                ? "status-completed"
-                                : "status-pending"
-                            }`}
-                          >
-                            {report.reportStatus}
-                          </span>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                <div className="reminders-list">
+                  {reminders.map((item, index) => (
+                    <div className="reminder-item" key={index}>
+                      <span className="reminder-dot"></span>
+                      <p>{item}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
             </section>
           </>
         )}
       </div>
-
-      {selectedPatient && (
-        <div
-          className="patient-modal-overlay"
-          onClick={() => setSelectedPatient(null)}
-        >
-          <div
-            className="patient-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              className="close-modal-btn"
-              onClick={() => setSelectedPatient(null)}
-            >
-              ✕
-            </button>
-
-            <div className="patient-modal-header">
-              {selectedPatient.childImageUrl ? (
-                <img
-                  src={selectedPatient.childImageUrl}
-                  alt={selectedPatient.childName}
-                  className="patient-modal-image"
-                />
-              ) : (
-                <div className="patient-modal-placeholder">🧒</div>
-              )}
-
-              <div>
-                <h2>{selectedPatient.childName || "Child"}</h2>
-                <p>{selectedPatient.childCode || "N/A"}</p>
-                <span className="level-pill">
-                  {selectedPatient.assignedLevelName || "No level assigned"}
-                </span>
-              </div>
-            </div>
-
-            <div className="patient-modal-grid">
-              <div className="modal-info-card">
-                <h4>Child Information</h4>
-                <p><strong>Age:</strong> {selectedPatient.age || "N/A"}</p>
-                <p><strong>Gender:</strong> {selectedPatient.gender || "N/A"}</p>
-                <p><strong>Parent:</strong> {selectedPatient.parentName || "N/A"}</p>
-                <p><strong>Parent Email:</strong> {selectedPatient.parentEmail || "N/A"}</p>
-              </div>
-
-              <div className="modal-info-card">
-                <h4>Therapy Progress</h4>
-                <p><strong>Progress:</strong> {selectedPatient.overallProgress || 0}%</p>
-                <p><strong>Completed Items:</strong> {selectedPatient.totalCompletedItems || 0}</p>
-                <p><strong>Total Items:</strong> {selectedPatient.totalItems || 0}</p>
-                <p><strong>Current Mode:</strong> {selectedPatient.currentMode || "N/A"}</p>
-              </div>
-
-              <div className="modal-info-card">
-                <h4>Support Notes</h4>
-                <p><strong>Strongest Area:</strong> {selectedPatient.strongestArea || "N/A"}</p>
-                <p><strong>Support Area:</strong> {selectedPatient.supportArea || "N/A"}</p>
-                <p>
-                  <strong>Recommendation:</strong>{" "}
-                  {selectedPatient.overallRecommendation || "No recommendation yet"}
-                </p>
-              </div>
-
-              <div className="modal-info-card">
-                <h4>Device & Report</h4>
-                <p>
-                  <strong>Device:</strong>{" "}
-                  {selectedPatient.deviceAssigned ? "Assigned" : "Not assigned"}
-                </p>
-                <p><strong>Device Name:</strong> {selectedPatient.deviceName || "N/A"}</p>
-                <p><strong>Report Status:</strong> {selectedPatient.reportStatus || "Pending"}</p>
-                <p><strong>Home Advice:</strong> {selectedPatient.homeAdvice || "N/A"}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

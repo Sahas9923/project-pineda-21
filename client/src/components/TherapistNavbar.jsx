@@ -104,7 +104,7 @@ const TherapistNavbar = () => {
           Patients
         </NavLink>
 
-        <NavLink to="/reports" className="therapist-nav-link">
+        <NavLink to="/therapist-progress" className="therapist-nav-link">
           Reports
         </NavLink>
 

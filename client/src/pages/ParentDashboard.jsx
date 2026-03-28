@@ -12,12 +12,9 @@ import {
   getDoc,
 } from "firebase/firestore";
 
-
-
 import {
   FaChild,
   FaUserMd,
-  FaChartLine,
   FaPuzzlePiece,
   FaMapMarkerAlt,
   FaPhoneAlt,
@@ -28,26 +25,23 @@ import {
 import sahasImg from "../assets/sahas.png";
 import thiliniImg from "../assets/thilini.png";
 
-const geoUrl =
-  "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
-
 const cityCoordinates = {
-  Colombo: [79.8612, 6.9271],
-  Negombo: [79.8358, 7.2083],
-  Kandy: [80.6337, 7.2906],
-  Galle: [80.217, 6.0535],
-  Jaffna: [80.0074, 9.6615],
-  Kurunegala: [80.3647, 7.4863],
-  Matara: [80.546, 5.9485],
-  Anuradhapura: [80.4037, 8.3114],
-  Batticaloa: [81.701, 7.7102],
-  London: [-0.1276, 51.5072],
-  Dubai: [55.2708, 25.2048],
-  Sydney: [151.2093, -33.8688],
-  Toronto: [-79.3832, 43.6532],
-  Singapore: [103.8198, 1.3521],
-  NewYork: [-74.006, 40.7128],
-  Melbourne: [144.9631, -37.8136],
+  Colombo: { lat: 6.9271, lng: 79.8612 },
+  Negombo: { lat: 7.2083, lng: 79.8358 },
+  Kandy: { lat: 7.2906, lng: 80.6337 },
+  Galle: { lat: 6.0535, lng: 80.217 },
+  Jaffna: { lat: 9.6615, lng: 80.0074 },
+  Kurunegala: { lat: 7.4863, lng: 80.3647 },
+  Matara: { lat: 5.9485, lng: 80.546 },
+  Anuradhapura: { lat: 8.3114, lng: 80.4037 },
+  Batticaloa: { lat: 7.7102, lng: 81.701 },
+  London: { lat: 51.5072, lng: -0.1276 },
+  Dubai: { lat: 25.2048, lng: 55.2708 },
+  Sydney: { lat: -33.8688, lng: 151.2093 },
+  Toronto: { lat: 43.6532, lng: -79.3832 },
+  Singapore: { lat: 1.3521, lng: 103.8198 },
+  NewYork: { lat: 40.7128, lng: -74.006 },
+  Melbourne: { lat: -37.8136, lng: 144.9631 },
 };
 
 const ParentDashboard = () => {
@@ -127,14 +121,16 @@ const ParentDashboard = () => {
           const rawCity = firstLocation?.city || therapistData.city || "Colombo";
           const normalizedCityKey = rawCity.replace(/\s+/g, "");
 
+          const matchedCoordinates =
+            cityCoordinates[rawCity] ||
+            cityCoordinates[normalizedCityKey] ||
+            cityCoordinates.Colombo;
+
           therapistResults.push({
             id: therapistUid,
             ...therapistData,
             city: rawCity,
-            coordinates:
-              cityCoordinates[rawCity] ||
-              cityCoordinates[normalizedCityKey] ||
-              cityCoordinates.Colombo,
+            coordinates: matchedCoordinates,
             locationData: firstLocation,
             description:
               therapistData.description ||
@@ -159,17 +155,26 @@ const ParentDashboard = () => {
       (child) => child.deviceAssigned
     ).length;
 
-    const assignedLevelCount = childrenList.filter(
-      (child) => child.assignedLevelId || child.assignedLevelName
-    ).length;
-
     return {
       childCount,
       therapistCount,
       assignedDeviceCount,
-      assignedLevelCount,
     };
   }, [childrenList, therapists]);
+
+  const mapEmbedUrl = useMemo(() => {
+    if (selectedTherapist?.coordinates) {
+      const { lat, lng } = selectedTherapist.coordinates;
+      return `https://www.google.com/maps?q=${lat},${lng}&z=11&output=embed`;
+    }
+
+    if (therapists.length > 0 && therapists[0]?.coordinates) {
+      const { lat, lng } = therapists[0].coordinates;
+      return `https://www.google.com/maps?q=${lat},${lng}&z=8&output=embed`;
+    }
+
+    return "https://www.google.com/maps?q=Sri%20Lanka&z=7&output=embed";
+  }, [selectedTherapist, therapists]);
 
   return (
     <div className="parent-dashboard-page">
@@ -203,10 +208,12 @@ const ParentDashboard = () => {
             </div>
           </div>
         </section>
-
+<section className="stats-full-wrapper">
         <section className="stats-grid">
           <div className="stat-card">
-            <div className="stat-icon"><FaChild /></div>
+            <div className="stat-icon">
+              <FaChild />
+            </div>
             <div>
               <h3>{stats.childCount}</h3>
               <p>Registered Children</p>
@@ -214,7 +221,9 @@ const ParentDashboard = () => {
           </div>
 
           <div className="stat-card">
-            <div className="stat-icon"><FaUserMd /></div>
+            <div className="stat-icon">
+              <FaUserMd />
+            </div>
             <div>
               <h3>{stats.therapistCount}</h3>
               <p>Connected Therapists</p>
@@ -222,28 +231,76 @@ const ParentDashboard = () => {
           </div>
 
           <div className="stat-card">
-            <div className="stat-icon"><FaPuzzlePiece /></div>
+            <div className="stat-icon">
+              <FaPuzzlePiece />
+            </div>
             <div>
               <h3>{stats.assignedDeviceCount}</h3>
               <p>Assigned Devices</p>
             </div>
           </div>
-
+        </section>
         </section>
 
         <section className="dashboard-section">
           <div className="section-head">
             <h2>Therapist Network</h2>
             <p>
-              Explore connected therapists across cities. Click a therapist
-              marker to view their details.
+              Explore connected therapists across cities. Click a therapist card
+              below to view their details and location on the map.
             </p>
           </div>
 
           <div className="map-card">
             <div className="map-wrapper">
-              
+              <iframe
+                title="Therapist Network Map"
+                src={mapEmbedUrl}
+                width="100%"
+                height="100%"
+                style={{ border: 0 }}
+                allowFullScreen
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
             </div>
+
+            {therapists.length > 0 && (
+              <div className="therapist-list-grid">
+                {therapists.map((therapist) => (
+                  <button
+                    key={therapist.id}
+                    type="button"
+                    className={`therapist-location-card ${
+                      selectedTherapist?.id === therapist.id ? "active" : ""
+                    }`}
+                    onClick={() => setSelectedTherapist(therapist)}
+                  >
+                    <img
+                      src={therapist.imageUrl || thiliniImg}
+                      alt={therapist.name || "Therapist"}
+                      className="therapist-location-image"
+                    />
+
+                    <div className="therapist-location-content">
+                      <h4>{therapist.name || "Therapist"}</h4>
+                      <p>
+                        {therapist.specialization || "Speech Therapist"}
+                      </p>
+                      <span>
+                        <FaMapMarkerAlt /> {therapist.city || "Colombo"}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {therapists.length === 0 && (
+              <div className="map-empty-note">
+                No connected therapist locations found yet.
+              </div>
+            )}
           </div>
         </section>
 
@@ -378,7 +435,9 @@ const ParentDashboard = () => {
                 <p>
                   {selectedTherapist.locationData?.placeName || "Not specified"}
                 </p>
-                <p>{selectedTherapist.locationData?.address || "No address available"}</p>
+                <p>
+                  {selectedTherapist.locationData?.address || "No address available"}
+                </p>
               </div>
             </div>
           </div>

@@ -93,7 +93,7 @@ const ParentNavbar = () => {
           Child Info
         </NavLink>
 
-        <NavLink to="/progress" className="nav-link">
+        <NavLink to="/parent-progress" className="nav-link">
           Progress
         </NavLink>
       </nav>

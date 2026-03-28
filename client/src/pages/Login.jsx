@@ -28,13 +28,25 @@ const LoginPage = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
+  const [message, setMessage] = useState({
+    text: "",
+    type: "",
+  });
+
+  const showMessage = (text, type = "error") => {
+    setMessage({ text, type });
+    setTimeout(() => {
+      setMessage({ text: "", type: "" });
+    }, 3000);
+  };
+
   const goToDashboard = (userRole) => {
     if (userRole === "parent") {
       navigate("/parent-dashboard");
     } else if (userRole === "therapist") {
       navigate("/therapist-dashboard");
     } else {
-      alert("❌ Invalid role.");
+      showMessage("Invalid role.", "error");
     }
   };
 
@@ -66,7 +78,6 @@ const LoginPage = () => {
   const createUserDocuments = async (uid, userData) => {
     const readableId = await generateReadableId(userData.role);
 
-    // users collection
     await setDoc(doc(db, "users", uid), {
       name: userData.name,
       email: userData.email,
@@ -75,7 +86,6 @@ const LoginPage = () => {
       createdAt: serverTimestamp(),
     });
 
-    // parents collection
     if (userData.role === "parent") {
       await setDoc(doc(db, "parents", uid), {
         parentId: readableId,
@@ -84,12 +94,11 @@ const LoginPage = () => {
         role: "parent",
         contact: "",
         address: "",
-        imageUrl: "", 
+        imageUrl: "",
         createdAt: serverTimestamp(),
       });
     }
 
-    // therapists collection
     if (userData.role === "therapist") {
       await setDoc(doc(db, "therapists", uid), {
         therapistId: readableId,
@@ -99,7 +108,7 @@ const LoginPage = () => {
         contact: "",
         slmcNumber: "",
         experience: "",
-        imageUrl: "", 
+        imageUrl: "",
         createdAt: serverTimestamp(),
       });
     }
@@ -111,7 +120,7 @@ const LoginPage = () => {
     try {
       if (isRegister) {
         if (!name.trim()) {
-          alert("❌ Please enter your full name.");
+          showMessage("Please enter your full name.", "error");
           return;
         }
 
@@ -130,11 +139,11 @@ const LoginPage = () => {
         });
 
         if (role === "parent") {
-          alert("✅ Parent account created successfully!");
-          goToDashboard("parent");
+          showMessage("Parent account created successfully!", "success");
+          setTimeout(() => goToDashboard("parent"), 700);
         } else if (role === "therapist") {
-          alert("✅ Therapist account created successfully!");
-          goToDashboard("therapist");
+          showMessage("Therapist account created successfully!", "success");
+          setTimeout(() => goToDashboard("therapist"), 700);
         }
       } else {
         const userCredential = await signInWithEmailAndPassword(
@@ -151,14 +160,14 @@ const LoginPage = () => {
           const userData = userDoc.data();
 
           if (userData.role === "parent") {
-            alert("✅ Login successful!");
-            goToDashboard("parent");
+            showMessage("Login successful!", "success");
+            setTimeout(() => goToDashboard("parent"), 700);
             return;
           }
 
           if (userData.role === "therapist") {
-            alert("✅ Login successful!");
-            goToDashboard("therapist");
+            showMessage("Login successful!", "success");
+            setTimeout(() => goToDashboard("therapist"), 700);
             return;
           }
         }
@@ -167,32 +176,32 @@ const LoginPage = () => {
         const therapistDoc = await getDoc(doc(db, "therapists", uid));
 
         if (parentDoc.exists()) {
-          alert("✅ Login successful!");
-          goToDashboard("parent");
+          showMessage("Login successful!", "success");
+          setTimeout(() => goToDashboard("parent"), 700);
         } else if (therapistDoc.exists()) {
-          alert("✅ Login successful!");
-          goToDashboard("therapist");
+          showMessage("Login successful!", "success");
+          setTimeout(() => goToDashboard("therapist"), 700);
         } else {
-          alert("❌ User role not found!");
+          showMessage("User role not found!", "error");
         }
       }
     } catch (error) {
       console.error("Auth error:", error);
 
       if (error.code === "auth/email-already-in-use") {
-        alert("❌ This email is already registered.");
+        showMessage("This email is already registered.", "error");
       } else if (error.code === "auth/invalid-email") {
-        alert("❌ Invalid email address.");
+        showMessage("Invalid email address.", "error");
       } else if (error.code === "auth/weak-password") {
-        alert("❌ Password should be at least 6 characters.");
+        showMessage("Password should be at least 6 characters.", "error");
       } else if (
         error.code === "auth/user-not-found" ||
         error.code === "auth/wrong-password" ||
         error.code === "auth/invalid-credential"
       ) {
-        alert("❌ Invalid credentials.");
+        showMessage("Invalid credentials.", "error");
       } else {
-        alert("❌ " + error.message);
+        showMessage(error.message || "Something went wrong.", "error");
       }
     }
   };
@@ -213,7 +222,6 @@ const LoginPage = () => {
       const parentDoc = await getDoc(parentRef);
       const therapistDoc = await getDoc(therapistRef);
 
-      // new google user -> create based on selected role
       if (!userDoc.exists() && !parentDoc.exists() && !therapistDoc.exists()) {
         await createUserDocuments(uid, {
           name: user.displayName || "User",
@@ -221,46 +229,44 @@ const LoginPage = () => {
           role: role,
         });
 
-        alert("✅ Google sign in successful!");
-        goToDashboard(role);
+        showMessage("Google sign in successful!", "success");
+        setTimeout(() => goToDashboard(role), 700);
         return;
       }
 
-      // existing user
       if (userDoc.exists()) {
         const userData = userDoc.data();
 
         if (userData.role === "parent") {
-          alert("✅ Google sign in successful!");
-          goToDashboard("parent");
+          showMessage("Google sign in successful!", "success");
+          setTimeout(() => goToDashboard("parent"), 700);
           return;
         }
 
         if (userData.role === "therapist") {
-          alert("✅ Google sign in successful!");
-          goToDashboard("therapist");
+          showMessage("Google sign in successful!", "success");
+          setTimeout(() => goToDashboard("therapist"), 700);
           return;
         }
       }
 
       if (parentDoc.exists()) {
-        alert("✅ Google sign in successful!");
-        goToDashboard("parent");
+        showMessage("Google sign in successful!", "success");
+        setTimeout(() => goToDashboard("parent"), 700);
       } else if (therapistDoc.exists()) {
-        alert("✅ Google sign in successful!");
-        goToDashboard("therapist");
+        showMessage("Google sign in successful!", "success");
+        setTimeout(() => goToDashboard("therapist"), 700);
       } else {
-        alert("❌ User role not found!");
+        showMessage("User role not found!", "error");
       }
     } catch (error) {
       console.error("Google login error:", error);
-      alert("❌ " + error.message);
+      showMessage(error.message || "Google sign in failed.", "error");
     }
   };
 
   return (
     <div className="login-container">
-      {/* LEFT SIDE */}
       <div className="left-panel">
         <div className="teddy-rain">
           {[...Array(20)].map((_, i) => (
@@ -281,7 +287,6 @@ const LoginPage = () => {
         </div>
       </div>
 
-      {/* RIGHT SIDE */}
       <div className="right-panel">
         <div className="login-box">
           <div className="header">
@@ -332,6 +337,12 @@ const LoginPage = () => {
               {isRegister ? "Create your account" : "Sign in to continue"}
             </p>
           </div>
+
+          {message.text && (
+            <div className={`smooth-alert ${message.type}`}>
+              {message.type === "success" ? "✅" : "⚠️"} {message.text}
+            </div>
+          )}
 
           <div className="tabs">
             <button
@@ -406,10 +417,6 @@ const LoginPage = () => {
           >
             <span className="google-icon">G</span>
             <span>Continue with Google</span>
-          </button>
-
-          <button type="button" className="device-btn">
-            🧸 Open Device / Toy Mode
           </button>
         </div>
       </div>
