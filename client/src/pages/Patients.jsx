@@ -39,6 +39,7 @@ const TherapistPatients = () => {
   const [showAssignPanel, setShowAssignPanel] = useState(false);
   const [assigningPatient, setAssigningPatient] = useState(false);
 
+  const [showPatientDialog, setShowPatientDialog] = useState(false);
   const [showDeviceDialog, setShowDeviceDialog] = useState(false);
   const [assigningDevice, setAssigningDevice] = useState(false);
 
@@ -226,7 +227,7 @@ const TherapistPatients = () => {
       setLevels(levelsData);
 
       if (assignedData.length > 0) {
-        await handleSelectPatient(assignedData[0], assignedData);
+        await handleSelectPatient(assignedData[0], assignedData, false);
       } else {
         setSelectedPatient(null);
         setTherapyPlan(null);
@@ -241,7 +242,11 @@ const TherapistPatients = () => {
     }
   };
 
-  const handleSelectPatient = async (patient, sourceAssignedPatients = null) => {
+  const handleSelectPatient = async (
+    patient,
+    sourceAssignedPatients = null,
+    openDialog = false
+  ) => {
     try {
       const freshPatient =
         sourceAssignedPatients?.find((p) => p.id === patient.id) || patient;
@@ -368,6 +373,8 @@ const TherapistPatients = () => {
         therapyEndTime: planData?.therapyEndTime || "",
         fallbackMode: planData?.fallbackMode || "companion",
       });
+
+      if (openDialog) setShowPatientDialog(true);
     } catch (error) {
       console.error("Error selecting patient:", error);
       showMessage("❌ Failed to load patient details.");
@@ -841,12 +848,12 @@ const TherapistPatients = () => {
 
       <div className="therapist-patients-container">
         <section className="patients-hero-card">
-          <div>
+          <div className="hero-copy">
             <span className="patients-badge">👩‍⚕️ Patient Management</span>
             <h1>Therapist Patients</h1>
             <p>
-              Assign children, manage levels and devices, configure therapy plans,
-              and monitor each child’s journey from one clean workspace.
+              Manage assigned children, review progress, assign levels and devices,
+              and update therapy plans from one modern workspace.
             </p>
           </div>
 
@@ -965,63 +972,83 @@ const TherapistPatients = () => {
         {loading ? (
           <div className="state-card">Loading patients...</div>
         ) : (
-          <section className="patients-layout">
+          <section className="patients-main-section">
             <div className="patient-list-card">
               <div className="card-head">
-                <h2>Assigned Patients</h2>
-                <p>Stylish list view with more space for multiple patients.</p>
+                <h2>Patient List</h2>
+                <p>All assigned patients are visible here with quick status details.</p>
               </div>
 
               {filteredAssignedPatients.length === 0 ? (
                 <p className="empty-text">No assigned patients found.</p>
               ) : (
-                <div className="patient-list">
+                <div className="patient-list-grid">
                   {filteredAssignedPatients.map((patient) => (
                     <div
                       key={patient.id}
-                      className={`patient-row ${
-                        selectedPatient?.id === patient.id ? "selected-patient-row" : ""
+                      className={`patient-card ${
+                        selectedPatient?.id === patient.id ? "active-patient-card" : ""
                       }`}
-                      onClick={() => handleSelectPatient(patient)}
                     >
-                      <div className="patient-row-left">
+                      <div className="patient-card-top">
                         {patient.childImageUrl ? (
                           <img
                             src={patient.childImageUrl}
                             alt={patient.childName}
-                            className="patient-thumb"
+                            className="patient-avatar"
                           />
                         ) : (
-                          <div className="patient-thumb-placeholder">🧒</div>
+                          <div className="patient-avatar-placeholder">🧒</div>
                         )}
 
-                        <div className="patient-row-main">
+                        <div className="patient-card-main">
                           <h3>{patient.childName || "Child"}</h3>
                           <p>{patient.childCode || "No Code"}</p>
                         </div>
-                      </div>
 
-                      <div className="patient-row-info">
-                        <div className="patient-info-chip">
-                          <span className="chip-label">Parent</span>
-                          <span>{patient.parentName || "N/A"}</span>
-                        </div>
-
-                        <div className="patient-info-chip">
-                          <span className="chip-label">Level</span>
-                          <span>{patient.assignedLevelName || "Not Assigned"}</span>
-                        </div>
-
-                        <div className="patient-info-chip">
-                          <span className="chip-label">Device</span>
-                          <span>{patient.deviceAssigned ? "Assigned" : "Not Assigned"}</span>
-                        </div>
-                      </div>
-
-                      <div className="patient-row-status">
                         <span className="status-pill">
                           {patient.status || "active"}
                         </span>
+                      </div>
+
+                      <div className="patient-mini-grid">
+                        <div className="mini-info-box">
+                          <span>Parent</span>
+                          <strong>{patient.parentName || "N/A"}</strong>
+                        </div>
+
+                        <div className="mini-info-box">
+                          <span>Level</span>
+                          <strong>{patient.assignedLevelName || "Not Assigned"}</strong>
+                        </div>
+
+                        <div className="mini-info-box">
+                          <span>Device</span>
+                          <strong>{patient.deviceAssigned ? "Assigned" : "Not Assigned"}</strong>
+                        </div>
+
+                        <div className="mini-info-box">
+                          <span>Progress</span>
+                          <strong>{patient.overallProgress || 0}%</strong>
+                        </div>
+                      </div>
+
+                      <div className="patient-card-actions">
+                        <button
+                          className="ghost-action-btn"
+                          onClick={() => handleSelectPatient(patient)}
+                          type="button"
+                        >
+                          Select
+                        </button>
+
+                        <button
+                          className="primary-action-btn"
+                          onClick={() => handleSelectPatient(patient, null, true)}
+                          type="button"
+                        >
+                          View Details
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1029,192 +1056,301 @@ const TherapistPatients = () => {
               )}
             </div>
 
-            <div className="patient-details-card">
+            <div className="quick-summary-card">
               {!selectedPatient ? (
-                <p className="empty-text">Click a patient row to view full details.</p>
+                <div className="empty-summary">
+                  <h3>No Patient Selected</h3>
+                  <p>Select a patient from the list to see quick actions and details.</p>
+                </div>
               ) : (
                 <>
-                  <div className="details-header">
-                    <div className="details-header-left">
-                      <h2>Patient Details</h2>
-                      <p>
-                        Manage assignment, device, therapy plan, and progress for{" "}
-                        {selectedPatient.childName || "this child"}.
-                      </p>
+                  <div className="quick-summary-head">
+                    <h2>Quick Summary</h2>
+                    <p>
+                      Fast access to device, level, and therapy plan actions for{" "}
+                      {selectedPatient.childName || "this child"}.
+                    </p>
+                  </div>
+
+                  <div className="summary-highlight-card">
+                    <div className="summary-highlight-top">
+                      {selectedPatient.childImageUrl ? (
+                        <img
+                          src={selectedPatient.childImageUrl}
+                          alt={selectedPatient.childName}
+                          className="summary-avatar"
+                        />
+                      ) : (
+                        <div className="summary-avatar-placeholder">🧒</div>
+                      )}
+
+                      <div>
+                        <h3>{selectedPatient.childName || "Child"}</h3>
+                        <p>{selectedPatient.childCode || "No Code"}</p>
+                      </div>
                     </div>
 
-                    <div className="details-actions">
-                      <button
-                        type="button"
-                        className="assign-device-btn"
-                        onClick={openAssignDeviceDialog}
-                      >
-                        Assign Device
-                      </button>
+                    <div className="progress-block">
+                      <div className="progress-label-row">
+                        <span>Overall Progress</span>
+                        <strong>{reportData?.overallProgress ?? 0}%</strong>
+                      </div>
+                      <div className="progress-track">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${reportData?.overallProgress ?? 0}%` }}
+                        ></div>
+                      </div>
+                    </div>
 
-                      <div className="details-tabs">
-                        <button
-                          type="button"
-                          className={`detail-tab ${
-                            selectedTab === "overview" ? "active-detail-tab" : ""
-                          }`}
-                          onClick={() => setSelectedTab("overview")}
-                        >
-                          Overview
-                        </button>
-
-                        <button
-                          type="button"
-                          className={`detail-tab ${
-                            selectedTab === "assignment" ? "active-detail-tab" : ""
-                          }`}
-                          onClick={() => setSelectedTab("assignment")}
-                        >
-                          Assignment
-                        </button>
-
-                        <button
-                          type="button"
-                          className={`detail-tab ${
-                            selectedTab === "timeline" ? "active-detail-tab" : ""
-                          }`}
-                          onClick={() => setSelectedTab("timeline")}
-                        >
-                          Timeline
-                        </button>
+                    <div className="summary-grid">
+                      <div className="summary-item">
+                        <span>Assigned Level</span>
+                        <strong>{selectedPatient.assignedLevelName || "N/A"}</strong>
+                      </div>
+                      <div className="summary-item">
+                        <span>Device</span>
+                        <strong>{selectedPatient.deviceName || "Not Assigned"}</strong>
+                      </div>
+                      <div className="summary-item">
+                        <span>Sessions</span>
+                        <strong>{reportData?.totalSessionsCompleted ?? 0}</strong>
+                      </div>
+                      <div className="summary-item">
+                        <span>Parent</span>
+                        <strong>{selectedPatient.parentName || "N/A"}</strong>
                       </div>
                     </div>
                   </div>
 
-                  {selectedTab === "overview" && (
-                    <div className="details-grid">
-                      <div className="detail-box">
-                        <h3>Child Details</h3>
-                        <p><strong>Name:</strong> {selectedPatient.childName || "N/A"}</p>
-                        <p><strong>Code:</strong> {selectedPatient.childCode || "N/A"}</p>
-                        <p><strong>Age:</strong> {selectedPatient.age || "N/A"}</p>
-                        <p><strong>Gender:</strong> {selectedPatient.gender || "N/A"}</p>
-                        <p><strong>Status:</strong> {selectedPatient.status || "active"}</p>
-                      </div>
+                  <div className="quick-action-grid">
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={() => setShowLevelEditDialog(true)}
+                    >
+                      Edit Level
+                    </button>
 
-                      <div className="detail-box">
-                        <h3>Parent Info</h3>
-                        <p><strong>Name:</strong> {selectedPatient.parentName || "N/A"}</p>
-                        <p><strong>Parent ID:</strong> {selectedPatient.parentId || "N/A"}</p>
-                        <p><strong>Email:</strong> {selectedPatient.parentEmail || "N/A"}</p>
-                        <p><strong>Contact:</strong> {selectedPatient.parentContact || "N/A"}</p>
-                      </div>
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={openAssignDeviceDialog}
+                    >
+                      Assign Device
+                    </button>
 
-                      <div className="detail-box detail-box-wide">
-                        <div className="detail-box-header">
-                          <h3>Progress Access</h3>
-                          <button
-                            type="button"
-                            className="mini-edit-btn"
-                            onClick={() => setSelectedTab("assignment")}
-                          >
-                            View Progress
-                          </button>
-                        </div>
-                        <p>
-                          Open the next section to view therapy plan, recommendations,
-                          level details, and device-related progress management.
-                        </p>
-                        <p><strong>Overall Progress:</strong> {reportData?.overallProgress ?? 0}%</p>
-                        <p><strong>Sessions Completed:</strong> {reportData?.totalSessionsCompleted ?? 0}</p>
-                      </div>
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={() => setShowDeviceEditDialog(true)}
+                    >
+                      Edit Device
+                    </button>
 
-                  {selectedTab === "assignment" && (
-                    <div className="details-grid">
-                      <div className="detail-box">
-                        <div className="detail-box-header">
-                          <h3>Level Assignment</h3>
-                          <button
-                            type="button"
-                            className="mini-edit-btn"
-                            onClick={() => setShowLevelEditDialog(true)}
-                          >
-                            Edit Level
-                          </button>
-                        </div>
-                        <p><strong>Assigned Level:</strong> {selectedPatient.assignedLevelName || "N/A"}</p>
-                        <p><strong>Support Area:</strong> {reportData?.supportArea || "N/A"}</p>
-                        <p><strong>Strongest Area:</strong> {reportData?.strongestArea || "N/A"}</p>
-                      </div>
+                    <button
+                      type="button"
+                      className="quick-action-btn"
+                      onClick={() => setShowPlanEditDialog(true)}
+                    >
+                      Edit Therapy Plan
+                    </button>
 
-                      <div className="detail-box">
-                        <div className="detail-box-header">
-                          <h3>Device Info</h3>
-                          <button
-                            type="button"
-                            className="mini-edit-btn"
-                            onClick={() => setShowDeviceEditDialog(true)}
-                          >
-                            Edit Device
-                          </button>
-                        </div>
-                        <p><strong>Assigned:</strong> {selectedPatient.deviceAssigned ? "Yes" : "No"}</p>
-                        <p><strong>Device ID:</strong> {selectedPatient.deviceId || "N/A"}</p>
-                        <p><strong>Device Code:</strong> {selectedPatient.deviceCode || "N/A"}</p>
-                        <p><strong>Device Name:</strong> {selectedPatient.deviceName || "N/A"}</p>
-                        <p><strong>Status:</strong> {selectedPatient.deviceStatus || "N/A"}</p>
-                      </div>
-
-                      <div className="detail-box">
-                        <div className="detail-box-header">
-                          <h3>Therapy Plan</h3>
-                          <button
-                            type="button"
-                            className="mini-edit-btn"
-                            onClick={() => setShowPlanEditDialog(true)}
-                          >
-                            Edit Plan
-                          </button>
-                        </div>
-                        <p><strong>Max Sessions / Day:</strong> {therapyPlan?.maxSessionsPerDay ?? "N/A"}</p>
-                        <p><strong>Session Duration:</strong> {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins</p>
-                        <p><strong>Minimum Gap:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
-                        <p><strong>Therapy Time:</strong> {therapyPlan?.therapyStartTime || "N/A"} - {therapyPlan?.therapyEndTime || "N/A"}</p>
-                        <p><strong>Fallback Mode:</strong> {therapyPlan?.fallbackMode || "companion"}</p>
-                      </div>
-
-                      <div className="detail-box">
-                        <h3>Recommendations</h3>
-                        <p><strong>Summary:</strong> {reportData?.therapistSummary || "No summary yet"}</p>
-                        <p><strong>Recommendation:</strong> {reportData?.overallRecommendation || "No recommendation yet"}</p>
-                        <p><strong>Home Advice:</strong> {reportData?.homeAdvice || "No advice yet"}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedTab === "timeline" && (
-                    <div className="timeline-card">
-                      <h3>Recent Timeline</h3>
-
-                      {patientTimeline.length === 0 ? (
-                        <p className="empty-text">No updates found yet.</p>
-                      ) : (
-                        <div className="timeline-list">
-                          {patientTimeline.map((item) => (
-                            <div className="timeline-item" key={item.id}>
-                              <div className="timeline-dot"></div>
-                              <div className="timeline-content">
-                                <h4>{item.title || "Update"}</h4>
-                                <p>{item.description || "No description available."}</p>
-                                <span>{formatDate(item.createdAt)}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                    <button
+                      type="button"
+                      className="quick-action-btn wide-action-btn"
+                      onClick={() => setShowPatientDialog(true)}
+                    >
+                      Open Full Patient Details
+                    </button>
+                  </div>
                 </>
               )}
             </div>
           </section>
+        )}
+
+        {showPatientDialog && selectedPatient && (
+          <div className="modal-overlay" onClick={() => setShowPatientDialog(false)}>
+            <div className="patient-details-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Patient Full Details</h2>
+                <button
+                  type="button"
+                  className="close-modal-btn"
+                  onClick={() => setShowPatientDialog(false)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="patient-dialog-top">
+                {selectedPatient.childImageUrl ? (
+                  <img
+                    src={selectedPatient.childImageUrl}
+                    alt={selectedPatient.childName}
+                    className="dialog-avatar"
+                  />
+                ) : (
+                  <div className="dialog-avatar-placeholder">🧒</div>
+                )}
+
+                <div className="dialog-title-block">
+                  <h3>{selectedPatient.childName || "Child"}</h3>
+                  <p>{selectedPatient.childCode || "No Code"}</p>
+                  <span className="dialog-status-badge">
+                    {selectedPatient.status || "active"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="dialog-tabs">
+                <button
+                  type="button"
+                  className={selectedTab === "overview" ? "active-dialog-tab" : ""}
+                  onClick={() => setSelectedTab("overview")}
+                >
+                  Overview
+                </button>
+
+                <button
+                  type="button"
+                  className={selectedTab === "assignment" ? "active-dialog-tab" : ""}
+                  onClick={() => setSelectedTab("assignment")}
+                >
+                  Assignment
+                </button>
+
+                <button
+                  type="button"
+                  className={selectedTab === "timeline" ? "active-dialog-tab" : ""}
+                  onClick={() => setSelectedTab("timeline")}
+                >
+                  Timeline
+                </button>
+              </div>
+
+              {selectedTab === "overview" && (
+                <div className="dialog-content-grid">
+                  <div className="dialog-info-card">
+                    <h4>Child Information</h4>
+                    <p><strong>Name:</strong> {selectedPatient.childName || "N/A"}</p>
+                    <p><strong>Code:</strong> {selectedPatient.childCode || "N/A"}</p>
+                    <p><strong>Age:</strong> {selectedPatient.age || "N/A"}</p>
+                    <p><strong>Gender:</strong> {selectedPatient.gender || "N/A"}</p>
+                    <p><strong>Status:</strong> {selectedPatient.status || "active"}</p>
+                  </div>
+
+                  <div className="dialog-info-card">
+                    <h4>Parent Information</h4>
+                    <p><strong>Name:</strong> {selectedPatient.parentName || "N/A"}</p>
+                    <p><strong>Parent ID:</strong> {selectedPatient.parentId || "N/A"}</p>
+                    <p><strong>Email:</strong> {selectedPatient.parentEmail || "N/A"}</p>
+                    <p><strong>Contact:</strong> {selectedPatient.parentContact || "N/A"}</p>
+                  </div>
+
+                  <div className="dialog-info-card dialog-wide-card">
+                    <h4>Progress Summary</h4>
+                    <div className="progress-label-row">
+                      <span>Current Progress</span>
+                      <strong>{reportData?.overallProgress ?? 0}%</strong>
+                    </div>
+                    <div className="progress-track">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${reportData?.overallProgress ?? 0}%` }}
+                      ></div>
+                    </div>
+                    <p><strong>Completed Sessions:</strong> {reportData?.totalSessionsCompleted ?? 0}</p>
+                    <p><strong>Completed Items:</strong> {reportData?.totalCompletedItems ?? 0}</p>
+                    <p><strong>Total Items:</strong> {reportData?.totalItems ?? 0}</p>
+                  </div>
+                </div>
+              )}
+
+              {selectedTab === "assignment" && (
+                <div className="dialog-content-grid">
+                  <div className="dialog-info-card">
+                    <div className="dialog-card-head">
+                      <h4>Level Assignment</h4>
+                      <button
+                        className="mini-edit-btn"
+                        type="button"
+                        onClick={() => setShowLevelEditDialog(true)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                    <p><strong>Assigned Level:</strong> {selectedPatient.assignedLevelName || "N/A"}</p>
+                    <p><strong>Strongest Area:</strong> {reportData?.strongestArea || "N/A"}</p>
+                    <p><strong>Support Area:</strong> {reportData?.supportArea || "N/A"}</p>
+                  </div>
+
+                  <div className="dialog-info-card">
+                    <div className="dialog-card-head">
+                      <h4>Device Information</h4>
+                      <button
+                        className="mini-edit-btn"
+                        type="button"
+                        onClick={() => setShowDeviceEditDialog(true)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                    <p><strong>Assigned:</strong> {selectedPatient.deviceAssigned ? "Yes" : "No"}</p>
+                    <p><strong>Device ID:</strong> {selectedPatient.deviceId || "N/A"}</p>
+                    <p><strong>Device Code:</strong> {selectedPatient.deviceCode || "N/A"}</p>
+                    <p><strong>Device Name:</strong> {selectedPatient.deviceName || "N/A"}</p>
+                    <p><strong>Status:</strong> {selectedPatient.deviceStatus || "N/A"}</p>
+                  </div>
+
+                  <div className="dialog-info-card dialog-wide-card">
+                    <div className="dialog-card-head">
+                      <h4>Therapy Plan & Recommendations</h4>
+                      <button
+                        className="mini-edit-btn"
+                        type="button"
+                        onClick={() => setShowPlanEditDialog(true)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                    <p><strong>Max Sessions / Day:</strong> {therapyPlan?.maxSessionsPerDay ?? "N/A"}</p>
+                    <p><strong>Session Duration:</strong> {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins</p>
+                    <p><strong>Minimum Gap:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
+                    <p><strong>Therapy Time:</strong> {therapyPlan?.therapyStartTime || "N/A"} - {therapyPlan?.therapyEndTime || "N/A"}</p>
+                    <p><strong>Fallback Mode:</strong> {therapyPlan?.fallbackMode || "companion"}</p>
+                    <p><strong>Summary:</strong> {reportData?.therapistSummary || "No summary yet"}</p>
+                    <p><strong>Recommendation:</strong> {reportData?.overallRecommendation || "No recommendation yet"}</p>
+                    <p><strong>Home Advice:</strong> {reportData?.homeAdvice || "No advice yet"}</p>
+                  </div>
+                </div>
+              )}
+
+              {selectedTab === "timeline" && (
+                <div className="timeline-card">
+                  <h3>Recent Timeline</h3>
+
+                  {patientTimeline.length === 0 ? (
+                    <p className="empty-text">No updates found yet.</p>
+                  ) : (
+                    <div className="timeline-list">
+                      {patientTimeline.map((item) => (
+                        <div className="timeline-item" key={item.id}>
+                          <div className="timeline-dot"></div>
+                          <div className="timeline-content">
+                            <h4>{item.title || "Update"}</h4>
+                            <p>{item.description || "No description available."}</p>
+                            <span>{formatDate(item.createdAt)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {showDeviceDialog && (

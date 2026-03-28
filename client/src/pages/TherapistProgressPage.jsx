@@ -309,43 +309,147 @@ const TherapistProgressPage = () => {
     const reportHtml = `
       <html>
         <head>
-          <title>Therapist Progress Report</title>
+          <title>Pineda Patient's Progress Report</title>
           <style>
             body {
-              font-family: Arial, sans-serif;
-              padding: 32px;
-              color: #1d3557;
+                font-family: "Segoe UI", Arial, sans-serif;
+                padding: 40px;
+                background: #f7fbff;
+                color: #1e293b;
             }
-            h1, h2 {
-              margin-bottom: 8px;
+
+            .report-shell {
+                max-width: 1100px;
+                margin: 0 auto;
             }
+
+            .report-header {
+                background: linear-gradient(135deg, #e8f8ff, #eefcf9);
+                border: 1px solid #d8eaf5;
+                border-radius: 18px;
+                padding: 22px 24px;
+                margin-bottom: 24px;
+            }
+
+            .report-header h1 {
+                margin: 0 0 8px;
+                font-size: 30px;
+                color: #0f3254;
+            }
+
+            .report-header p {
+                margin: 4px 0;
+                color: #4f6b86;
+                font-size: 14px;
+            }
+
+            h2 {
+                margin: 0 0 14px;
+                font-size: 20px;
+                color: #17303d;
+            }
+
             .section {
-              margin-top: 24px;
+                margin-top: 24px;
             }
+
             .card {
-              border: 1px solid #d9e7f2;
-              border-radius: 12px;
-              padding: 14px;
-              margin-bottom: 12px;
+                background: #ffffff;
+                border: 1px solid #dbe8f3;
+                border-radius: 16px;
+                padding: 18px 20px;
+                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
             }
+
+            .summary-grid {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 14px;
+                margin-top: 14px;
+            }
+
+            .summary-item {
+                background: #f8fbff;
+                border: 1px solid #e3edf6;
+                border-radius: 14px;
+                padding: 14px;
+            }
+
+            .summary-item span {
+                display: block;
+                margin-bottom: 6px;
+                color: #5d7691;
+                font-size: 12px;
+                font-weight: 700;
+                text-transform: uppercase;
+            }
+
+            .summary-item strong {
+                color: #0f3254;
+                font-size: 20px;
+            }
+
             table {
-              width: 100%;
-              border-collapse: collapse;
-              margin-top: 12px;
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 12px;
+                background: #ffffff;
+                border: 1px solid #dbe8f3;
+                border-radius: 16px;
+                overflow: hidden;
             }
+
             th, td {
-              border: 1px solid #d9e7f2;
-              padding: 10px;
-              text-align: left;
-              font-size: 14px;
+                padding: 12px 14px;
+                text-align: left;
+                font-size: 14px;
+                border-bottom: 1px solid #e8f0f7;
             }
+
             th {
-              background: #f4f9fd;
+                background: #f4f9fd;
+                color: #4d6784;
+                font-weight: 800;
             }
+
+            tr:last-child td {
+                border-bottom: none;
+            }
+
             ul {
-              margin-top: 8px;
+                margin: 0;
+                padding-left: 20px;
             }
-          </style>
+
+            li {
+                margin-bottom: 8px;
+                color: #4e6984;
+                line-height: 1.6;
+            }
+
+            .note-box {
+                margin-top: 14px;
+                background: #eef8fd;
+                border: 1px solid #cfe3f1;
+                border-radius: 14px;
+                padding: 14px 16px;
+                color: #0f3254;
+                font-weight: 600;
+            }
+
+            @media print {
+                body {
+                background: #ffffff;
+                padding: 18px;
+                }
+
+                .card,
+                table,
+                .report-header {
+                box-shadow: none;
+                }
+            }
+            </style>
         </head>
         <body>
           <h1>Therapist Progress Report</h1>

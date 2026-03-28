@@ -48,6 +48,7 @@ const ParentDashboard = () => {
   const [parentName, setParentName] = useState("Parent");
   const [childrenList, setChildrenList] = useState([]);
   const [therapists, setTherapists] = useState([]);
+  const [allTherapists, setAllTherapists] = useState([]);
   const [selectedTherapist, setSelectedTherapist] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -55,9 +56,69 @@ const ParentDashboard = () => {
     fetchDashboardData();
   }, []);
 
+  const buildTherapistObject = async (therapistId, therapistData) => {
+    let allLocations = [];
+    let firstLocation = null;
+
+    try {
+      const locationsSnapshot = await getDocs(
+        collection(db, "therapists", therapistId, "locations")
+      );
+
+      if (!locationsSnapshot.empty) {
+        allLocations = locationsSnapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+
+        firstLocation =
+          allLocations.find((loc) => loc.isPrimary) || allLocations[0] || null;
+      }
+    } catch (error) {
+      console.log("No location data found for therapist:", therapistId);
+    }
+
+    const rawCity = firstLocation?.city || therapistData.city || "Colombo";
+    const normalizedCityKey = rawCity.replace(/\s+/g, "");
+
+    const matchedCoordinates =
+      cityCoordinates[rawCity] ||
+      cityCoordinates[normalizedCityKey] ||
+      cityCoordinates.Colombo;
+
+    return {
+      id: therapistId,
+      ...therapistData,
+      city: rawCity,
+      coordinates: matchedCoordinates,
+      locationData: firstLocation,
+      locations: allLocations,
+      description:
+        therapistData.description ||
+        "A dedicated speech therapy professional supporting child communication development through guided and structured therapy sessions.",
+    };
+  };
+
+  const fetchAllTherapists = async () => {
+    try {
+      const therapistSnapshot = await getDocs(collection(db, "therapists"));
+
+      const therapistResults = await Promise.all(
+        therapistSnapshot.docs.map(async (therapistDoc) => {
+          return await buildTherapistObject(therapistDoc.id, therapistDoc.data());
+        })
+      );
+
+      setAllTherapists(therapistResults);
+    } catch (error) {
+      console.error("Error fetching all therapists:", error);
+    }
+  };
+
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
+
       const user = auth.currentUser;
       if (!user) return;
 
@@ -90,56 +151,21 @@ const ParentDashboard = () => {
         ),
       ];
 
-      const therapistResults = [];
+      const therapistResults = await Promise.all(
+        uniqueTherapistIds.map(async (therapistUid) => {
+          const therapistRef = doc(db, "therapists", therapistUid);
+          const therapistSnap = await getDoc(therapistRef);
 
-      for (const therapistUid of uniqueTherapistIds) {
-        const therapistRef = doc(db, "therapists", therapistUid);
-        const therapistSnap = await getDoc(therapistRef);
+          if (!therapistSnap.exists()) return null;
 
-        if (therapistSnap.exists()) {
-          const therapistData = therapistSnap.data();
+          return await buildTherapistObject(therapistUid, therapistSnap.data());
+        })
+      );
 
-          let firstLocation = null;
-          try {
-            const locationsSnapshot = await getDocs(
-              collection(db, "therapists", therapistUid, "locations")
-            );
+      const filteredAssignedTherapists = therapistResults.filter(Boolean);
+      setTherapists(filteredAssignedTherapists);
 
-            if (!locationsSnapshot.empty) {
-              const locations = locationsSnapshot.docs.map((d) => ({
-                id: d.id,
-                ...d.data(),
-              }));
-
-              firstLocation =
-                locations.find((loc) => loc.isPrimary) || locations[0] || null;
-            }
-          } catch (error) {
-            console.log("No location data found for therapist:", therapistUid);
-          }
-
-          const rawCity = firstLocation?.city || therapistData.city || "Colombo";
-          const normalizedCityKey = rawCity.replace(/\s+/g, "");
-
-          const matchedCoordinates =
-            cityCoordinates[rawCity] ||
-            cityCoordinates[normalizedCityKey] ||
-            cityCoordinates.Colombo;
-
-          therapistResults.push({
-            id: therapistUid,
-            ...therapistData,
-            city: rawCity,
-            coordinates: matchedCoordinates,
-            locationData: firstLocation,
-            description:
-              therapistData.description ||
-              "A dedicated speech therapy professional supporting child communication development through guided and structured therapy sessions.",
-          });
-        }
-      }
-
-      setTherapists(therapistResults);
+      await fetchAllTherapists();
     } catch (error) {
       console.error("Error fetching parent dashboard data:", error);
     } finally {
@@ -168,13 +194,13 @@ const ParentDashboard = () => {
       return `https://www.google.com/maps?q=${lat},${lng}&z=11&output=embed`;
     }
 
-    if (therapists.length > 0 && therapists[0]?.coordinates) {
-      const { lat, lng } = therapists[0].coordinates;
+    if (allTherapists.length > 0 && allTherapists[0]?.coordinates) {
+      const { lat, lng } = allTherapists[0].coordinates;
       return `https://www.google.com/maps?q=${lat},${lng}&z=8&output=embed`;
     }
 
     return "https://www.google.com/maps?q=Sri%20Lanka&z=7&output=embed";
-  }, [selectedTherapist, therapists]);
+  }, [selectedTherapist, allTherapists]);
 
   return (
     <div className="parent-dashboard-page">
@@ -208,46 +234,47 @@ const ParentDashboard = () => {
             </div>
           </div>
         </section>
-<section className="stats-full-wrapper">
-        <section className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-icon">
-              <FaChild />
-            </div>
-            <div>
-              <h3>{stats.childCount}</h3>
-              <p>Registered Children</p>
-            </div>
-          </div>
 
-          <div className="stat-card">
-            <div className="stat-icon">
-              <FaUserMd />
+        <section className="stats-strip-section">
+          <div className="stats-grid">
+            <div className="stat-card">
+              <div className="stat-icon">
+                <FaChild />
+              </div>
+              <div>
+                <h3>{stats.childCount}</h3>
+                <p>Registered Children</p>
+              </div>
             </div>
-            <div>
-              <h3>{stats.therapistCount}</h3>
-              <p>Connected Therapists</p>
-            </div>
-          </div>
 
-          <div className="stat-card">
-            <div className="stat-icon">
-              <FaPuzzlePiece />
+            <div className="stat-card">
+              <div className="stat-icon">
+                <FaUserMd />
+              </div>
+              <div>
+                <h3>{stats.therapistCount}</h3>
+                <p>Assigned Therapists</p>
+              </div>
             </div>
-            <div>
-              <h3>{stats.assignedDeviceCount}</h3>
-              <p>Assigned Devices</p>
+
+            <div className="stat-card">
+              <div className="stat-icon">
+                <FaPuzzlePiece />
+              </div>
+              <div>
+                <h3>{stats.assignedDeviceCount}</h3>
+                <p>Assigned Devices</p>
+              </div>
             </div>
           </div>
-        </section>
         </section>
 
         <section className="dashboard-section">
           <div className="section-head">
             <h2>Therapist Network</h2>
             <p>
-              Explore connected therapists across cities. Click a therapist card
-              below to view their details and location on the map.
+              Explore all therapists registered with Pineda. Click a therapist
+              card below to view details and location on the map.
             </p>
           </div>
 
@@ -265,9 +292,9 @@ const ParentDashboard = () => {
               />
             </div>
 
-            {therapists.length > 0 && (
+            {allTherapists.length > 0 ? (
               <div className="therapist-list-grid">
-                {therapists.map((therapist) => (
+                {allTherapists.map((therapist) => (
                   <button
                     key={therapist.id}
                     type="button"
@@ -276,29 +303,38 @@ const ParentDashboard = () => {
                     }`}
                     onClick={() => setSelectedTherapist(therapist)}
                   >
-                    <img
-                      src={therapist.imageUrl || thiliniImg}
-                      alt={therapist.name || "Therapist"}
-                      className="therapist-location-image"
-                    />
+                    <div className="therapist-card-top">
+                      <img
+                        src={therapist.imageUrl || thiliniImg}
+                        alt={therapist.name || "Therapist"}
+                        className="therapist-location-image"
+                      />
 
-                    <div className="therapist-location-content">
-                      <h4>{therapist.name || "Therapist"}</h4>
-                      <p>
-                        {therapist.specialization || "Speech Therapist"}
-                      </p>
-                      <span>
-                        <FaMapMarkerAlt /> {therapist.city || "Colombo"}
-                      </span>
+                      <div className="therapist-location-content">
+                        <h4>{therapist.name || "Therapist"}</h4>
+                        <p>
+                          {therapist.specialization || "Speech Therapist"}
+                        </p>
+                        <span>
+                          <FaMapMarkerAlt /> {therapist.city || "Colombo"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="therapist-location-meta">
+                      <div className="meta-chip">
+                        {therapist.locationData?.placeName || "Location not added"}
+                      </div>
+                      <div className="meta-subtext">
+                        {therapist.locationData?.availableDays || "Days not set"}
+                      </div>
                     </div>
                   </button>
                 ))}
               </div>
-            )}
-
-            {therapists.length === 0 && (
+            ) : (
               <div className="map-empty-note">
-                No connected therapist locations found yet.
+                No therapist locations found yet.
               </div>
             )}
           </div>
@@ -431,7 +467,7 @@ const ParentDashboard = () => {
               </div>
 
               <div className="modal-extra-card">
-                <h4>Practice Location</h4>
+                <h4>Primary Practice Location</h4>
                 <p>
                   {selectedTherapist.locationData?.placeName || "Not specified"}
                 </p>
@@ -439,6 +475,43 @@ const ParentDashboard = () => {
                   {selectedTherapist.locationData?.address || "No address available"}
                 </p>
               </div>
+
+              {selectedTherapist.locations?.length > 0 && (
+                <div className="all-locations-section">
+                  <h4>All Uploaded Locations</h4>
+
+                  <div className="all-locations-grid">
+                    {selectedTherapist.locations.map((location) => (
+                      <div className="single-location-card" key={location.id}>
+                        <div className="single-location-head">
+                          <h5>{location.placeName || "Unnamed Place"}</h5>
+                          {location.isPrimary && (
+                            <span className="primary-location-badge">
+                              Primary
+                            </span>
+                          )}
+                        </div>
+
+                        <p>
+                          <strong>Address:</strong> {location.address || "N/A"}
+                        </p>
+                        <p>
+                          <strong>City:</strong> {location.city || "N/A"}
+                        </p>
+                        <p>
+                          <strong>Contact:</strong> {location.contactNumber || "N/A"}
+                        </p>
+                        <p>
+                          <strong>Days:</strong> {location.availableDays || "N/A"}
+                        </p>
+                        <p>
+                          <strong>Time:</strong> {location.availableTime || "N/A"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
