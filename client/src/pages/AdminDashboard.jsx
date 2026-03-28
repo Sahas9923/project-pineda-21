@@ -34,6 +34,16 @@ const AdminDashboard = () => {
   const [itemText, setItemText] = useState("");
   const [itemType, setItemType] = useState("sound");
   const [imageFile, setImageFile] = useState(null);
+  const [mp3Track, setMp3Track] = useState("");
+  const [promptDelayMs, setPromptDelayMs] = useState("2500");
+
+  const [editingItemId, setEditingItemId] = useState(null);
+  const [editItemText, setEditItemText] = useState("");
+  const [editItemType, setEditItemType] = useState("sound");
+  const [editMp3Track, setEditMp3Track] = useState("");
+  const [editPromptDelayMs, setEditPromptDelayMs] = useState("2500");
+  const [editImageFile, setEditImageFile] = useState(null);
+  const [updatingItem, setUpdatingItem] = useState(false);
 
   const [items, setItems] = useState([]);
   const [message, setMessage] = useState("");
@@ -198,6 +208,23 @@ const AdminDashboard = () => {
       return;
     }
 
+    const parsedTrack = Number(mp3Track);
+    if (
+      !mp3Track ||
+      Number.isNaN(parsedTrack) ||
+      parsedTrack < 1 ||
+      !Number.isInteger(parsedTrack)
+    ) {
+      showMessage("❌ Please enter a valid MP3 track number.");
+      return;
+    }
+
+    const parsedDelay = Number(promptDelayMs || 2500);
+    if (Number.isNaN(parsedDelay) || parsedDelay < 0) {
+      showMessage("❌ Please enter a valid prompt delay.");
+      return;
+    }
+
     try {
       setLoadingItem(true);
 
@@ -212,24 +239,124 @@ const AdminDashboard = () => {
         type: itemType,
         imageUrl,
         storagePath: storageRef.fullPath,
+        mp3Track: parsedTrack,
+        promptDelayMs: parsedDelay,
         createdAt: serverTimestamp(),
       });
 
       setItemText("");
       setItemType("sound");
       setImageFile(null);
+      setMp3Track("");
+      setPromptDelayMs("2500");
 
       const fileInput = document.getElementById("imageUpload");
       if (fileInput) fileInput.value = "";
 
       await fetchItems(selectedLevel);
-
       showMessage("✅ Item added successfully.");
     } catch (error) {
       console.error("Error adding item:", error);
       showMessage("❌ Failed to add item.");
     } finally {
       setLoadingItem(false);
+    }
+  };
+
+  const handleEditItem = (item) => {
+    setEditingItemId(item.id);
+    setEditItemText(item.text || "");
+    setEditItemType(item.type || "sound");
+    setEditMp3Track(String(item.mp3Track ?? ""));
+    setEditPromptDelayMs(String(item.promptDelayMs ?? 2500));
+    setEditImageFile(null);
+  };
+
+  const cancelEditItem = () => {
+    setEditingItemId(null);
+    setEditItemText("");
+    setEditItemType("sound");
+    setEditMp3Track("");
+    setEditPromptDelayMs("2500");
+    setEditImageFile(null);
+  };
+
+  const handleUpdateItem = async (e, item) => {
+    e.preventDefault();
+
+    if (!selectedLevel || !item?.id) {
+      showMessage("❌ Item update failed.");
+      return;
+    }
+
+    if (!editItemText.trim()) {
+      showMessage("❌ Please enter item text.");
+      return;
+    }
+
+    const parsedTrack = Number(editMp3Track);
+    if (
+      !editMp3Track ||
+      Number.isNaN(parsedTrack) ||
+      parsedTrack < 1 ||
+      !Number.isInteger(parsedTrack)
+    ) {
+      showMessage("❌ Please enter a valid MP3 track number.");
+      return;
+    }
+
+    const parsedDelay = Number(editPromptDelayMs || 2500);
+    if (Number.isNaN(parsedDelay) || parsedDelay < 0) {
+      showMessage("❌ Please enter a valid prompt delay.");
+      return;
+    }
+
+    try {
+      setUpdatingItem(true);
+
+      const updateData = {
+        text: editItemText.trim(),
+        type: editItemType,
+        mp3Track: parsedTrack,
+        promptDelayMs: parsedDelay,
+      };
+
+      if (editImageFile) {
+        const newFileName = `${Date.now()}-${editImageFile.name}`;
+        const newStorageRef = ref(
+          storage,
+          `speech-items/${selectedLevel}/${newFileName}`
+        );
+
+        await uploadBytes(newStorageRef, editImageFile);
+        const newImageUrl = await getDownloadURL(newStorageRef);
+
+        updateData.imageUrl = newImageUrl;
+        updateData.storagePath = newStorageRef.fullPath;
+
+        if (item.storagePath) {
+          try {
+            const oldImageRef = ref(storage, item.storagePath);
+            await deleteObject(oldImageRef);
+          } catch (deleteError) {
+            console.warn("Old image delete failed:", deleteError);
+          }
+        }
+      }
+
+      await updateDoc(
+        doc(db, "levels", selectedLevel, "items", item.id),
+        updateData
+      );
+
+      cancelEditItem();
+      await fetchItems(selectedLevel);
+      showMessage("✅ Item updated successfully.");
+    } catch (error) {
+      console.error("Error updating item:", error);
+      showMessage("❌ Failed to update item.");
+    } finally {
+      setUpdatingItem(false);
     }
   };
 
@@ -262,7 +389,6 @@ const AdminDashboard = () => {
     try {
       setDeletingLevel(true);
 
-      // 1. Delete all item images from Storage folder
       const folderRef = ref(storage, `speech-items/${levelId}`);
       try {
         const folderItems = await listAll(folderRef);
@@ -273,27 +399,22 @@ const AdminDashboard = () => {
         console.warn("Storage folder may be empty or missing:", storageError);
       }
 
-      // 2. Delete all item documents from Firestore
       const itemsSnapshot = await getDocs(collection(db, "levels", levelId, "items"));
       for (const itemDoc of itemsSnapshot.docs) {
         await deleteDoc(doc(db, "levels", levelId, "items", itemDoc.id));
       }
 
-      // 3. Delete the level document
       await deleteDoc(doc(db, "levels", levelId));
 
-      // 4. Reset edit mode if needed
       if (editingLevelId === levelId) {
         cancelEditLevel();
       }
-
-      // 5. Refresh levels and items
-      await fetchLevels();
 
       if (selectedLevel === levelId) {
         setItems([]);
       }
 
+      await fetchLevels();
       showMessage("✅ Level and all items deleted successfully.");
     } catch (error) {
       console.error("Error deleting level:", error);
@@ -312,7 +433,10 @@ const AdminDashboard = () => {
     <div className="admin-dashboard">
       <div className="admin-header">
         <h1>Admin Dashboard</h1>
-        <p>Manage speech practice levels and add sounds, words, or sentences with images.</p>
+        <p>
+          Manage speech practice levels and add sounds, words, or sentences with
+          images and MP3 tracks.
+        </p>
       </div>
 
       {message && <div className="message-box">{message}</div>}
@@ -372,6 +496,24 @@ const AdminDashboard = () => {
             />
 
             <input
+              type="number"
+              min="1"
+              step="1"
+              placeholder="Enter MP3 track number (e.g. 1 for 0001.mp3)"
+              value={mp3Track}
+              onChange={(e) => setMp3Track(e.target.value)}
+            />
+
+            <input
+              type="number"
+              min="0"
+              step="100"
+              placeholder="Prompt delay in ms (default 2500)"
+              value={promptDelayMs}
+              onChange={(e) => setPromptDelayMs(e.target.value)}
+            />
+
+            <input
               id="imageUpload"
               type="file"
               accept="image/*"
@@ -394,7 +536,9 @@ const AdminDashboard = () => {
             {levels.map((level) => (
               <div
                 key={level.id}
-                className={`level-box ${selectedLevel === level.id ? "active-level" : ""}`}
+                className={`level-box ${
+                  selectedLevel === level.id ? "active-level" : ""
+                }`}
                 onClick={() => setSelectedLevel(level.id)}
               >
                 {editingLevelId === level.id ? (
@@ -477,19 +621,110 @@ const AdminDashboard = () => {
           <div className="items-grid">
             {items.map((item) => (
               <div className="item-card" key={item.id}>
-                <img src={item.imageUrl} alt={item.text} className="item-image" />
-
-                <div className="item-body">
-                  <span className={`type-badge ${item.type}`}>{item.type}</span>
-                  <h4>{item.text}</h4>
-
-                  <button
-                    className="delete-btn"
-                    onClick={() => handleDeleteItem(item.id, item.storagePath)}
+                {editingItemId === item.id ? (
+                  <form
+                    className="admin-form item-edit-form"
+                    onSubmit={(e) => handleUpdateItem(e, item)}
                   >
-                    Delete Item
-                  </button>
-                </div>
+                    <img
+                      src={item.imageUrl}
+                      alt={item.text}
+                      className="item-image"
+                    />
+
+                    <select
+                      value={editItemType}
+                      onChange={(e) => setEditItemType(e.target.value)}
+                    >
+                      <option value="sound">Sound</option>
+                      <option value="word">Word</option>
+                      <option value="sentence">Sentence</option>
+                    </select>
+
+                    <input
+                      type="text"
+                      placeholder="Edit item text"
+                      value={editItemText}
+                      onChange={(e) => setEditItemText(e.target.value)}
+                    />
+
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="Edit MP3 track number"
+                      value={editMp3Track}
+                      onChange={(e) => setEditMp3Track(e.target.value)}
+                    />
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      placeholder="Edit prompt delay"
+                      value={editPromptDelayMs}
+                      onChange={(e) => setEditPromptDelayMs(e.target.value)}
+                    />
+
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setEditImageFile(e.target.files[0])}
+                    />
+
+                    <div className="edit-buttons">
+                      <button type="submit" disabled={updatingItem}>
+                        {updatingItem ? "Updating..." : "Save Item"}
+                      </button>
+                      <button
+                        type="button"
+                        className="cancel-btn"
+                        onClick={cancelEditItem}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <img
+                      src={item.imageUrl}
+                      alt={item.text}
+                      className="item-image"
+                    />
+
+                    <div className="item-body">
+                      <span className={`type-badge ${item.type}`}>
+                        {item.type}
+                      </span>
+                      <h4>{item.text}</h4>
+                      <p>
+                        <strong>🎵 Track:</strong> {item.mp3Track ?? 0}
+                      </p>
+                      <p>
+                        <strong>⏱ Delay:</strong> {item.promptDelayMs ?? 2500} ms
+                      </p>
+
+                      <div className="item-action-buttons">
+                        <button
+                          className="edit-btn"
+                          onClick={() => handleEditItem(item)}
+                        >
+                          Edit Item
+                        </button>
+
+                        <button
+                          className="delete-btn"
+                          onClick={() =>
+                            handleDeleteItem(item.id, item.storagePath)
+                          }
+                        >
+                          Delete Item
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>

@@ -1,1797 +1,1180 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import "../styles/DevicePage.css";
-import { db } from "../firebase/config";
+
+import { auth, db } from "../firebase/config";
 import {
   addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
-  increment,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
-  where,
 } from "firebase/firestore";
 
+const SERVER = "http://192.168.1.3:5000";
 const MAX_ATTEMPTS = 3;
-const AUTO_RECORD_DELAY = 1200;
-const AUTO_RETRY_DELAY = 2200;
-const AUTO_NEXT_DELAY = 1500;
-const RECORDING_LENGTH = 4000;
-const TARGET_THRESHOLD = 45;
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 35000;
 
 const DevicePage = () => {
-  const { deviceId } = useParams();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const passedState = location.state || {};
+  const { state } = useLocation();
 
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
+  const [pageError, setPageError] = useState("");
 
-  const [childData, setChildData] = useState(null);
-  const [deviceData, setDeviceData] = useState(null);
-  const [therapyPlan, setTherapyPlan] = useState(null);
-  const [levelData, setLevelData] = useState(null);
+  const [child, setChild] = useState(null);
+  const [parent, setParent] = useState(null);
+  const [therapist, setTherapist] = useState(null);
+  const [deviceInfo, setDeviceInfo] = useState(null);
+  const [therapyPlanData, setTherapyPlanData] = useState(null);
+  const [levelInfo, setLevelInfo] = useState(null);
   const [items, setItems] = useState([]);
 
-  const [selectedMode, setSelectedMode] = useState(null);
-  const [therapyAllowed, setTherapyAllowed] = useState(true);
-  const [therapyBlockedReason, setTherapyBlockedReason] = useState("");
-
-  const [sessionNumber, setSessionNumber] = useState(1);
-  const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [sessionId, setSessionId] = useState("");
   const [sessionStarted, setSessionStarted] = useState(false);
+  const [sessionCompleted, setSessionCompleted] = useState(false);
   const [sessionPaused, setSessionPaused] = useState(false);
-  const [sessionEnded, setSessionEnded] = useState(false);
-  const [sessionDocId, setSessionDocId] = useState("");
+  const [sessionBlocked, setSessionBlocked] = useState(false);
 
-  const [currentItemIndex, setCurrentItemIndex] = useState(0);
-  const [currentAttempts, setCurrentAttempts] = useState(1);
+  const [selectedMode, setSelectedMode] = useState("therapy");
+  const [therapyModeAllowed, setTherapyModeAllowed] = useState(true);
+  const [therapyRestrictionMessage, setTherapyRestrictionMessage] = useState("");
 
-  const [currentItemProgress, setCurrentItemProgress] = useState({
-    front: 0,
-    middle: 0,
-    end: 0,
-    overall: 0,
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [attempt, setAttempt] = useState(1);
+  const [stage, setStage] = useState("Ready");
+  const [latestResult, setLatestResult] = useState(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [toyPromptActive, setToyPromptActive] = useState(false);
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const [progress, setProgress] = useState({
+    attemptedItems: 0,
+    exact: 0,
+    close: 0,
+    partial: 0,
+    incorrect: 0,
+    overallScore: 0,
   });
 
-  const [recognizedText, setRecognizedText] = useState("");
-  const [recording, setRecording] = useState(false);
-  const [checkingAudio, setCheckingAudio] = useState(false);
-  const [requestInFlight, setRequestInFlight] = useState(false);
-
-  const [savedItemsCount, setSavedItemsCount] = useState(0);
-  const [feedbackText, setFeedbackText] = useState("");
-  const [stepAlert, setStepAlert] = useState("Idle");
-  const [stepType, setStepType] = useState("info");
-
-  const [lastResult, setLastResult] = useState({
-    itemTitle: "",
-    transcript: "",
-    front: 0,
-    middle: 0,
-    end: 0,
-    overall: 0,
-  });
-
-  const [mediaRecorder, setMediaRecorder] = useState(null);
-
-  const audioChunksRef = useRef([]);
+  const pollRef = useRef(null);
+  const pollStartedAtRef = useRef(null);
   const timerRef = useRef(null);
-  const streamRef = useRef(null);
-  const autoStopTimeoutRef = useRef(null);
-  const autoNextTimeoutRef = useRef(null);
-  const autoRetryTimeoutRef = useRef(null);
-  const autoStartTimeoutRef = useRef(null);
-  const messageTimeoutRef = useRef(null);
 
-  const autoStartEnabledRef = useRef(false);
-  const transitionLockRef = useRef(false);
+  const currentItem = useMemo(() => items[currentIndex] || null, [items, currentIndex]);
 
-  const todayKey = useMemo(() => {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, "0");
-    const d = String(now.getDate()).padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  }, []);
+  const completionPercent =
+    items.length > 0 ? Math.round((progress.attemptedItems / items.length) * 100) : 0;
 
-  useEffect(() => {
-    loadDevicePageData();
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
-      if (autoNextTimeoutRef.current) clearTimeout(autoNextTimeoutRef.current);
-      if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current);
-      if (autoStartTimeoutRef.current) clearTimeout(autoStartTimeoutRef.current);
-      if (messageTimeoutRef.current) clearTimeout(messageTimeoutRef.current);
-
-      try {
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-          mediaRecorder.stop();
-        }
-      } catch (error) {
-        console.log(error);
-      }
-
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (
-      sessionStarted &&
-      !sessionEnded &&
-      !sessionPaused &&
-      selectedMode === "therapy"
-    ) {
-      timerRef.current = setInterval(() => {
-        setSessionSeconds((prev) => prev + 1);
-      }, 1000);
-    } else if (timerRef.current) {
-      clearInterval(timerRef.current);
+  const friendlyFeedback = useMemo(() => {
+    if (selectedMode === "companion") {
+      if (!sessionStarted) return "Press start to begin companion mode.";
+      if (sessionPaused) return "Companion mode paused.";
+      if (sessionCompleted) return "Companion mode ended.";
+      return "Companion mode active.";
     }
 
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [sessionStarted, sessionEnded, sessionPaused, selectedMode]);
-
-  useEffect(() => {
-    if (!therapyPlan || selectedMode !== "therapy" || sessionEnded) return;
-
-    const maxDurationSeconds =
-      Number(therapyPlan.sessionDurationMinutes || 0) * 60;
-
-    if (maxDurationSeconds > 0 && sessionSeconds >= maxDurationSeconds) {
-      endTherapySessionByTime();
+    if (!latestResult) {
+      if (sessionPaused) return "Session paused.";
+      if (sessionCompleted) return "Session completed.";
+      return "Ready for the next practice step.";
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionSeconds, therapyPlan, selectedMode, sessionEnded]);
 
-  useEffect(() => {
-    const ready =
-      selectedMode === "therapy" &&
-      sessionStarted &&
-      !sessionPaused &&
-      !sessionEnded &&
-      items.length > 0 &&
-      !recording &&
-      !checkingAudio &&
-      !requestInFlight &&
-      autoStartEnabledRef.current &&
-      !transitionLockRef.current;
+    if (latestResult.matchStatus === "exact") return "Excellent work.";
+    if (latestResult.matchStatus === "close") return "Very close.";
+    if (latestResult.matchStatus === "partial") return "Good try.";
+    return "Try once more.";
+  }, [selectedMode, sessionStarted, sessionPaused, sessionCompleted, latestResult]);
 
-    if (!ready) return;
-
-    autoStartEnabledRef.current = false;
-
-    autoStartTimeoutRef.current = setTimeout(() => {
-      startRecording(true);
-    }, AUTO_RECORD_DELAY);
-
-    return () => {
-      if (autoStartTimeoutRef.current) clearTimeout(autoStartTimeoutRef.current);
-    };
-  }, [
-    selectedMode,
-    sessionStarted,
-    sessionPaused,
-    sessionEnded,
-    items.length,
-    currentItemIndex,
-    recording,
-    checkingAudio,
-    requestInFlight,
-  ]);
-
-  const setStep = (text, type = "info") => {
-    setStepAlert(text);
-    setStepType(type);
-    console.log("[DEVICE STEP]", text);
-  };
-
-  const showMessage = (text) => {
-    setMessage(text);
-    if (messageTimeoutRef.current) clearTimeout(messageTimeoutRef.current);
-    messageTimeoutRef.current = setTimeout(() => setMessage(""), 3500);
-  };
-
-  const formatSeconds = (totalSeconds) => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
-  const getCurrentItem = () => {
-    if (!items.length) return null;
-    return items[currentItemIndex] || null;
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    pollStartedAtRef.current = null;
   };
 
-  const normalizeItem = (rawItem, index) => {
-    const text = rawItem.text || rawItem.title || rawItem.name || "";
-    const sound =
-      rawItem.sound ||
-      rawItem.letter ||
-      rawItem.targetSound ||
-      text ||
-      "";
-
-    const front =
-      rawItem.front ||
-      rawItem.initial ||
-      rawItem.frontWord ||
-      text ||
-      "";
-
-    const middle =
-      rawItem.middle ||
-      rawItem.medial ||
-      rawItem.middleWord ||
-      text ||
-      "";
-
-    const end =
-      rawItem.end ||
-      rawItem.final ||
-      rawItem.endWord ||
-      text ||
-      "";
-
-    const title = rawItem.title || rawItem.name || text || `Item ${index + 1}`;
-
-    return {
-      id: rawItem.id || `item-${index + 1}`,
-      title,
-      text,
-      sound,
-      front,
-      middle,
-      end,
-      imageUrl: rawItem.imageUrl || "",
-      type: rawItem.type || "sound",
-    };
-  };
-
-  const resetSessionStateOnly = () => {
-    setSessionStarted(false);
-    setSessionPaused(false);
-    setSessionEnded(false);
-    setSessionSeconds(0);
-    setCurrentItemIndex(0);
-    setCurrentAttempts(1);
-    setRecognizedText("");
-    setSavedItemsCount(0);
-    setFeedbackText("");
-    setSessionDocId("");
-    setRequestInFlight(false);
-    setCheckingAudio(false);
-    setRecording(false);
-    setStep("Idle", "info");
-
-    autoStartEnabledRef.current = false;
-    transitionLockRef.current = false;
-
-    setCurrentItemProgress({
-      front: 0,
-      middle: 0,
-      end: 0,
-      overall: 0,
-    });
-
-    setLastResult({
-      itemTitle: "",
-      transcript: "",
-      front: 0,
-      middle: 0,
-      end: 0,
-      overall: 0,
-    });
-  };
-
-  const stopCurrentRecordingIfAny = () => {
-    try {
-      if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
-      if (autoNextTimeoutRef.current) clearTimeout(autoNextTimeoutRef.current);
-      if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current);
-      if (autoStartTimeoutRef.current) clearTimeout(autoStartTimeoutRef.current);
-
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      }
-    } catch (error) {
-      console.log(error);
-    } finally {
-      setRecording(false);
-      setCheckingAudio(false);
-      setRequestInFlight(false);
-      setMediaRecorder(null);
-
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
-      }
-
-      if (window.speechSynthesis) {
-        window.speechSynthesis.cancel();
-      }
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
   };
 
-  const speakText = (text) => {
-    try {
-      if (!window.speechSynthesis || !text) return;
-
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.85;
-      utterance.pitch = 1.05;
-      utterance.volume = 1;
-
-      const voices = window.speechSynthesis.getVoices();
-      const femaleVoice =
-        voices.find((v) => v.name.toLowerCase().includes("zira")) ||
-        voices.find((v) => v.name.toLowerCase().includes("susan")) ||
-        voices.find((v) => v.name.toLowerCase().includes("female")) ||
-        voices[0];
-
-      if (femaleVoice) utterance.voice = femaleVoice;
-
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-    } catch (error) {
-      console.log("Speech synthesis error:", error);
-    }
+  const startTimer = () => {
+    stopTimer();
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
   };
 
-  const buildInstructionForItem = (item) => {
-    if (!item) return "Let's try the next word.";
-    return `Say this word: ${item.title || item.sound || "word"}`;
+  const getTodayKey = () => {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   };
 
-  const queueAutoAttempt = (delay = AUTO_RETRY_DELAY) => {
-    if (sessionEnded || sessionPaused || !sessionStarted) return;
-    autoStartEnabledRef.current = true;
-    if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current);
-    autoRetryTimeoutRef.current = setTimeout(() => {
-      if (!sessionEnded && !sessionPaused && sessionStarted) {
-        autoStartEnabledRef.current = true;
-      }
-    }, delay);
-  };
-
-  const moveToNextWord = (reasonText = "Moving to next word.") => {
-    const isLastItem = currentItemIndex >= items.length - 1;
-
-    if (isLastItem) {
-      completeSessionFully();
-      return;
-    }
-
-    transitionLockRef.current = true;
-    autoStartEnabledRef.current = false;
-
-    if (autoNextTimeoutRef.current) clearTimeout(autoNextTimeoutRef.current);
-    autoNextTimeoutRef.current = setTimeout(() => {
-      const nextIndex = currentItemIndex + 1;
-
-      setCurrentAttempts(1);
-      setCurrentItemIndex(nextIndex);
-      setRecognizedText("Listening...");
-      setFeedbackText("");
-      setCurrentItemProgress({
-        front: 0,
-        middle: 0,
-        end: 0,
-        overall: 0,
-      });
-
-      const nextItem = items[nextIndex];
-      if (nextItem) {
-        const instruction = buildInstructionForItem(nextItem);
-        setFeedbackText(instruction);
-        setStep(instruction, "info");
-        speakText(instruction);
-      }
-
-      transitionLockRef.current = false;
-      autoStartEnabledRef.current = true;
-      showMessage(reasonText);
-    }, AUTO_NEXT_DELAY);
-  };
-
-  const handleFailedAttempt = async (item, transcript = "", progress = null, reason = "retry") => {
-    const nextAttempt = currentAttempts + 1;
-    const currentProgress =
-      progress ||
-      {
-        front: 0,
-        middle: 0,
-        end: 0,
-        overall: 0,
-      };
+  const isWithinTherapyTime = (startTime, endTime) => {
+    if (!startTime || !endTime) return true;
 
     try {
-      await saveProgressTracking({
-        item,
-        transcript,
-        progress: currentProgress,
-        attemptNumber: currentAttempts,
-        decision: reason === "forced_next" ? "forced_next" : "retry",
-        feedback:
-          nextAttempt <= MAX_ATTEMPTS
-            ? `Try again. Attempt ${nextAttempt} of ${MAX_ATTEMPTS}.`
-            : "Good try. Moving to next word.",
-      });
-    } catch (error) {
-      console.error("saveProgressTracking error:", error);
-    }
+      const now = new Date();
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-    if (currentAttempts >= MAX_ATTEMPTS) {
-      setFeedbackText("Good try. We will move to the next word now.");
-      speakText("Good try. We will move to the next word now.");
-      setStep(`Attempt ${MAX_ATTEMPTS}/${MAX_ATTEMPTS}. Moving to next word.`, "warning");
-      setSavedItemsCount((prev) => prev + 1);
-      moveToNextWord("➡️ 3 attempts used. Moving to next word.");
-      return;
-    }
+      const [startH, startM] = String(startTime).split(":").map(Number);
+      const [endH, endM] = String(endTime).split(":").map(Number);
 
-    setCurrentAttempts(nextAttempt);
-    const retryText = `Let's try again. Attempt ${nextAttempt} of ${MAX_ATTEMPTS}.`;
-    setFeedbackText(retryText);
-    speakText(retryText);
-    setStep(`Staying on same word. Attempt ${nextAttempt}/${MAX_ATTEMPTS}`, "warning");
-    showMessage(retryText);
-    queueAutoAttempt(AUTO_RETRY_DELAY);
-  };
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
 
-  const loadDevicePageData = async () => {
-    try {
-      setLoading(true);
-      setStep("Loading device data...", "info");
-
-      let childIdFromState = passedState.childId || "";
-      let childDocData = null;
-
-      if (childIdFromState) {
-        const childSnap = await getDoc(doc(db, "children", childIdFromState));
-        if (childSnap.exists()) {
-          childDocData = { id: childSnap.id, ...childSnap.data() };
-        }
-      }
-
-      if (!childDocData) {
-        const byDeviceId = query(
-          collection(db, "children"),
-          where("deviceId", "==", deviceId)
-        );
-        const byDeviceIdSnap = await getDocs(byDeviceId);
-
-        if (!byDeviceIdSnap.empty) {
-          const first = byDeviceIdSnap.docs[0];
-          childDocData = { id: first.id, ...first.data() };
-          childIdFromState = first.id;
-        }
-      }
-
-      if (!childDocData) {
-        const byDeviceCode = query(
-          collection(db, "children"),
-          where("deviceCode", "==", deviceId)
-        );
-        const byDeviceCodeSnap = await getDocs(byDeviceCode);
-
-        if (!byDeviceCodeSnap.empty) {
-          const first = byDeviceCodeSnap.docs[0];
-          childDocData = { id: first.id, ...first.data() };
-          childIdFromState = first.id;
-        }
-      }
-
-      if (!childDocData) {
-        setStep("Child not found for this device.", "error");
-        showMessage("❌ Child not found for this device.");
-        return;
-      }
-
-      const deviceSnap = await getDoc(doc(db, "devices", deviceId));
-      const deviceDocData = deviceSnap.exists()
-        ? { id: deviceSnap.id, ...deviceSnap.data() }
-        : {
-            id: deviceId,
-            deviceId,
-            deviceCode: deviceId,
-            deviceName: passedState.deviceName || "Assigned Device",
-            deviceStatus: "Assigned",
-          };
-
-      const planSnap = await getDoc(doc(db, "therapyPlans", childIdFromState));
-      const planData = planSnap.exists() ? planSnap.data() : null;
-
-      let fetchedLevel = null;
-      let normalizedItems = [];
-
-      if (childDocData.assignedLevelId) {
-        const levelSnap = await getDoc(
-          doc(db, "levels", childDocData.assignedLevelId)
-        );
-
-        if (levelSnap.exists()) {
-          fetchedLevel = { id: levelSnap.id, ...levelSnap.data() };
-        }
-
-        const itemsSnap = await getDocs(
-          collection(db, "levels", childDocData.assignedLevelId, "items")
-        );
-
-        normalizedItems = itemsSnap.docs.map((itemDoc, index) =>
-          normalizeItem({ id: itemDoc.id, ...itemDoc.data() }, index)
-        );
-      }
-
-      setChildData(childDocData);
-      setDeviceData(deviceDocData);
-      setTherapyPlan(planData);
-      setLevelData(fetchedLevel);
-      setItems(normalizedItems);
-
-      const todaySessionCount = await getTodaySessionCount(childDocData);
-      setSessionNumber(todaySessionCount + 1);
-
-      const accessResult = await checkTherapyAccess(childDocData, planData);
-      setTherapyAllowed(accessResult.therapyAllowed);
-      setTherapyBlockedReason(accessResult.reason || "");
-      setSelectedMode(accessResult.therapyAllowed ? "therapy" : "companion");
-
-      setStep("Device data loaded.", "success");
-    } catch (error) {
-      console.error(error);
-      setStep("Failed to load device page.", "error");
-      showMessage("❌ Failed to load device page.");
-    } finally {
-      setLoading(false);
+      return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    } catch {
+      return true;
     }
   };
 
-  const getTodaySessionCount = async (child) => {
+  const getTodaySessionCount = async (childData) => {
+    if (!childData?.id) return 0;
+
+    const todayKey = getTodayKey();
+
     try {
-      const usageSnap = await getDoc(
-        doc(db, "children", child.id, "dailyUsage", todayKey)
-      );
-      if (usageSnap.exists()) {
-        return Number(usageSnap.data().sessionCount || 0);
+      const dailyUsageRef = doc(db, "children", childData.id, "dailyUsage", todayKey);
+      const dailyUsageSnap = await getDoc(dailyUsageRef);
+
+      if (dailyUsageSnap.exists()) {
+        return Number(dailyUsageSnap.data().sessionCount || 0);
       }
-    } catch (error) {
-      console.log(error);
+    } catch {
+      //
     }
 
-    if (child.lastSessionDate === todayKey) {
-      return Number(child.todaySessionCount || 0);
+    if (childData.lastSessionDate === todayKey) {
+      return Number(childData.todaySessionCount || 0);
     }
 
     return 0;
   };
 
-  const checkMinimumGap = async (child, plan) => {
-    const minGap = Number(plan?.minimumGapBetweenSessionsMinutes || 0);
-    if (minGap <= 0) return { allowed: true, reason: "" };
+  const sortItems = (itemList) => {
+    return [...itemList].sort((a, b) => {
+      const aTrack = Number(a?.mp3Track || 0);
+      const bTrack = Number(b?.mp3Track || 0);
 
-    const sessionsSnap = await getDocs(
-      collection(db, "children", child.id, "sessions")
-    );
+      if (aTrack > 0 && bTrack > 0 && aTrack !== bTrack) {
+        return aTrack - bTrack;
+      }
 
-    const sessions = sessionsSnap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((s) => s.sessionDateKey === todayKey)
-      .sort((a, b) => {
-        const at = a.endedAt?.seconds || 0;
-        const bt = b.endedAt?.seconds || 0;
-        return bt - at;
-      });
+      const aCreated = a?.createdAt?.seconds || 0;
+      const bCreated = b?.createdAt?.seconds || 0;
+      return aCreated - bCreated;
+    });
+  };
 
-    if (!sessions.length) return { allowed: true, reason: "" };
-
-    const latest = sessions[0];
-    if (!latest.endedAt?.seconds) return { allowed: true, reason: "" };
-
-    const latestEndMs = latest.endedAt.seconds * 1000;
-    const diffMinutes = Math.floor((Date.now() - latestEndMs) / 60000);
-
-    if (diffMinutes < minGap) {
+  const evaluateTherapyAvailability = async (childData, planData) => {
+    if (!childData || !planData) {
       return {
         allowed: false,
-        reason: `Wait ${minGap - diffMinutes} more minute(s) before next therapy session.`,
+        reason: "Therapy plan is missing. Companion mode is available.",
+      };
+    }
+
+    const maxSessionsPerDay = Number(planData.maxSessionsPerDay || 0);
+    const lockTherapyAfterLimit = !!planData.lockTherapyAfterLimit;
+
+    if (maxSessionsPerDay < 1) {
+      return {
+        allowed: false,
+        reason: "Therapy mode is not configured yet. Companion mode is available.",
+      };
+    }
+
+    const inAllowedTime = isWithinTherapyTime(
+      planData.therapyStartTime,
+      planData.therapyEndTime
+    );
+
+    if (!inAllowedTime) {
+      return {
+        allowed: false,
+        reason: `Therapy mode is available only during ${
+          planData.therapyStartTime || "--"
+        } - ${planData.therapyEndTime || "--"}. Companion mode is available now.`,
+      };
+    }
+
+    const todaySessionCount = await getTodaySessionCount(childData);
+
+    if (lockTherapyAfterLimit && todaySessionCount >= maxSessionsPerDay) {
+      return {
+        allowed: false,
+        reason: `Today's therapy session limit (${maxSessionsPerDay}) has been reached. Companion mode is available instead.`,
       };
     }
 
     return { allowed: true, reason: "" };
   };
 
-  const isWithinTherapyTime = (startTime, endTime) => {
-    if (!startTime || !endTime) return true;
-
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-    const [startHour, startMinute] = startTime.split(":").map(Number);
-    const [endHour, endMinute] = endTime.split(":").map(Number);
-
-    const startTotal = startHour * 60 + startMinute;
-    const endTotal = endHour * 60 + endMinute;
-
-    return currentMinutes >= startTotal && currentMinutes <= endTotal;
-  };
-
-  const checkTherapyAccess = async (child, plan) => {
-    if (!child?.deviceAssigned) {
-      return { therapyAllowed: false, reason: "No device assigned." };
-    }
-
-    if (!plan) {
-      return { therapyAllowed: false, reason: "No therapy plan found." };
-    }
-
-    const todayCount = await getTodaySessionCount(child);
-    const maxSessions = Number(plan.maxSessionsPerDay || 0);
-
-    if (
-      maxSessions > 0 &&
-      todayCount >= maxSessions &&
-      plan.lockTherapyAfterLimit
-    ) {
-      return {
-        therapyAllowed: false,
-        reason: `Daily therapy limit reached (${maxSessions}).`,
-      };
-    }
-
-    if (!isWithinTherapyTime(plan.therapyStartTime, plan.therapyEndTime)) {
-      return {
-        therapyAllowed: false,
-        reason: "Outside therapy time window.",
-      };
-    }
-
-    const gap = await checkMinimumGap(child, plan);
-    if (!gap.allowed) {
-      return {
-        therapyAllowed: false,
-        reason: gap.reason,
-      };
-    }
-
-    return { therapyAllowed: true, reason: "" };
-  };
-
-  const handleModeChange = (mode) => {
-    if (mode === "therapy" && !therapyAllowed) {
-      showMessage(`⚠️ ${therapyBlockedReason || "Therapy mode is blocked."}`);
-      setStep("Therapy mode blocked.", "warning");
-      return;
-    }
-
-    stopCurrentRecordingIfAny();
-    resetSessionStateOnly();
-    setSelectedMode(mode);
-    setFeedbackText("");
-    setCurrentAttempts(1);
-    setStep(`Mode changed to ${mode}.`, "info");
-  };
-
-  const startTherapySession = async () => {
-    if (!childData || !therapyPlan) return;
-
-    if (!items.length) {
-      setStep("No items found in this level.", "error");
-      showMessage("❌ No items found in this level.");
-      return;
-    }
-
-    const accessResult = await checkTherapyAccess(childData, therapyPlan);
-    if (!accessResult.therapyAllowed) {
-      setTherapyAllowed(false);
-      setTherapyBlockedReason(accessResult.reason);
-      setSelectedMode("companion");
-      setStep(accessResult.reason, "warning");
-      showMessage(`⚠️ ${accessResult.reason}`);
-      return;
-    }
-
-    const newSessionDocId = `${todayKey}-S${sessionNumber}`;
-
-    setSessionDocId(newSessionDocId);
-    setSessionStarted(true);
-    setSessionPaused(false);
-    setSessionEnded(false);
-    setSessionSeconds(0);
-    setCurrentItemIndex(0);
-    setCurrentAttempts(1);
-    setRecognizedText("Listening...");
-    setSavedItemsCount(0);
-    setFeedbackText("");
-    setRequestInFlight(false);
-    setCheckingAudio(false);
-    setRecording(false);
-    autoStartEnabledRef.current = true;
-    transitionLockRef.current = false;
-
-    setLastResult({
-      itemTitle: "",
-      transcript: "",
-      front: 0,
-      middle: 0,
-      end: 0,
-      overall: 0,
-    });
-
-    setCurrentItemProgress({
-      front: 0,
-      middle: 0,
-      end: 0,
-      overall: 0,
-    });
-
-    setStep("Therapy session started.", "success");
-
-    await setDoc(
-      doc(db, "children", childData.id, "sessions", newSessionDocId),
-      {
-        sessionId: newSessionDocId,
-        sessionNumber,
-        sessionDateKey: todayKey,
-        childId: childData.id,
-        childName: childData.childName || "",
-        childCode: childData.childCode || "",
-        parentId: childData.parentId || "",
-        parentName: childData.parentName || "",
-        parentEmail: childData.parentEmail || "",
-        therapistUid: childData.therapistUid || "",
-        therapistName: childData.therapistName || "",
-        levelId: childData.assignedLevelId || "",
-        levelName: childData.assignedLevelName || "",
-        deviceId: deviceData?.deviceId || deviceId,
-        deviceCode: deviceData?.deviceCode || deviceId,
-        mode: "therapy",
-        startedAt: serverTimestamp(),
-        completed: false,
-        status: "started",
-        totalItems: items.length,
-        completedItems: 0,
-      },
-      { merge: true }
-    );
-
-    const firstItem = items[0];
-    if (firstItem) {
-      const instruction = buildInstructionForItem(firstItem);
-      setFeedbackText(instruction);
-      speakText(instruction);
-      setStep(instruction, "info");
-    }
-
-    showMessage("✅ Therapy session started.");
-  };
-
-  const pauseSession = async () => {
-    if (!sessionStarted || sessionEnded) return;
-
-    stopCurrentRecordingIfAny();
-    autoStartEnabledRef.current = false;
-    setSessionPaused(true);
-    setStep("Session paused.", "warning");
-
-    if (sessionDocId && childData?.id) {
-      await setDoc(
-        doc(db, "children", childData.id, "sessions", sessionDocId),
-        {
-          status: "paused",
-          pausedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-
-    showMessage("⏸️ Session paused.");
-  };
-
-  const resumeSession = async () => {
-    if (!sessionStarted || sessionEnded) return;
-
-    setSessionPaused(false);
-    setRecognizedText("Listening...");
-    autoStartEnabledRef.current = true;
-    setStep("Session resumed.", "success");
-
-    if (sessionDocId && childData?.id) {
-      await setDoc(
-        doc(db, "children", childData.id, "sessions", sessionDocId),
-        {
-          status: "resumed",
-          resumedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-    }
-
-    const current = getCurrentItem();
-    if (current) {
-      const instruction = buildInstructionForItem(current);
-      setFeedbackText(instruction);
-      speakText(instruction);
-    }
-
-    showMessage("▶️ Session resumed.");
-  };
-
-  const restartSession = async () => {
-    setStep("Restarting therapy session...", "warning");
-    stopCurrentRecordingIfAny();
-    resetSessionStateOnly();
-    await startTherapySession();
-  };
-
-  const interruptSession = async () => {
-    if (!sessionStarted || sessionEnded) return;
-
-    stopCurrentRecordingIfAny();
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    setSessionEnded(true);
-    setSessionStarted(false);
-    setSessionPaused(false);
-    autoStartEnabledRef.current = false;
-    setStep("Interrupting session and saving...", "warning");
-
-    await saveSessionSummary({
-      endedBy: "interrupted_by_user",
-      completed: false,
-    });
-
-    setStep("Session interrupted and saved.", "success");
-    showMessage("🛑 Session interrupted and saved.");
-  };
-
-  const endTherapySessionByTime = async () => {
-    stopCurrentRecordingIfAny();
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    setSessionEnded(true);
-    setSessionStarted(false);
-    setSessionPaused(false);
-    setTherapyAllowed(false);
-    setSelectedMode("companion");
-    autoStartEnabledRef.current = false;
-    setTherapyBlockedReason(
-      "Therapy time completed. Only Companion mode is available now."
-    );
-
-    setStep("Therapy time finished. Saving session...", "warning");
-
-    await saveSessionSummary({
-      endedBy: "time_limit",
-      completed: true,
-    });
-
-    await setDoc(
-      doc(db, "children", childData.id, "timeline", `${Date.now()}`),
-      {
-        title: "Therapy session ended",
-        description:
-          "Session time finished. Companion mode only is now available.",
-        createdAt: serverTimestamp(),
-      }
-    );
-
-    setStep("Session finished by time limit.", "success");
-    showMessage("⏰ Session time finished. Switching to Companion mode.");
-  };
-
-  const completeSessionFully = async () => {
-    stopCurrentRecordingIfAny();
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    setSessionEnded(true);
-    setSessionStarted(false);
-    setSessionPaused(false);
-    autoStartEnabledRef.current = false;
-    setStep("All items finished. Saving final session...", "success");
-
-    await saveSessionSummary({
-      endedBy: "items_completed",
-      completed: true,
-    });
-
-    setStep("Session completed and saved.", "success");
-    showMessage("✅ Session completed and saved.");
-  };
-
-  const startRecording = async (autoMode = false) => {
+  const loadPageData = async () => {
     try {
-      if (
-        !sessionStarted ||
-        sessionEnded ||
-        sessionPaused ||
-        selectedMode !== "therapy"
-      ) {
-        setStep("Recording blocked. Session is not active.", "warning");
+      setLoading(true);
+      setPageError("");
+
+      if (!state?.childId) {
+        setPageError("Missing child information.");
+        setLoading(false);
         return;
       }
 
-      if (recording || checkingAudio || requestInFlight || transitionLockRef.current) {
-        setStep("Already recording or processing audio...", "warning");
+      const childSnap = await getDoc(doc(db, "children", state.childId));
+      if (!childSnap.exists()) {
+        setPageError("Child record not found.");
+        setLoading(false);
         return;
       }
 
-      const current = getCurrentItem();
-      if (!current) {
-        setStep("No current item found.", "error");
+      const childData = { id: childSnap.id, ...childSnap.data() };
+      setChild(childData);
+
+      const parentUid = childData.parentUid || auth.currentUser?.uid || "";
+      if (parentUid) {
+        const parentSnap = await getDoc(doc(db, "parents", parentUid));
+        if (parentSnap.exists()) setParent({ id: parentSnap.id, ...parentSnap.data() });
+      }
+
+      const therapistUid = state?.therapistUid || childData.therapistUid || "";
+      if (therapistUid) {
+        const therapistSnap = await getDoc(doc(db, "therapists", therapistUid));
+        if (therapistSnap.exists()) setTherapist({ id: therapistSnap.id, ...therapistSnap.data() });
+      }
+
+      const levelId = state?.assignedLevelId || childData.assignedLevelId || "";
+      if (!levelId) {
+        setPageError("No assigned level found.");
+        setLoading(false);
         return;
       }
 
-      const instruction = buildInstructionForItem(current);
-      if (!autoMode) {
-        setFeedbackText(instruction);
-        speakText(instruction);
-      }
+      const levelSnap = await getDoc(doc(db, "levels", levelId));
+      if (levelSnap.exists()) setLevelInfo({ id: levelSnap.id, ...levelSnap.data() });
 
-      setStep(`Current item: ${current.title}`, "info");
-      setStep("Requesting microphone access...", "info");
+      const itemsRef = collection(db, "levels", levelId, "items");
+      let itemDocs = [];
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      setStep("Microphone access granted.", "success");
-
-      let mimeType = "audio/webm";
-      if (!MediaRecorder.isTypeSupported("audio/webm")) {
-        mimeType = "";
-      }
-
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
-
-      audioChunksRef.current = [];
-
-      recorder.onstart = () => {
-        setStep("Recording started...", "info");
-      };
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onerror = (event) => {
-        console.error("MediaRecorder error:", event);
-        setStep("Recorder error occurred.", "error");
-        setRecording(false);
-        setCheckingAudio(false);
-        setRequestInFlight(false);
-      };
-
-      recorder.onstop = async () => {
-        try {
-          setStep("Recording stopped.", "info");
-
-          const itemAtStop = getCurrentItem();
-          if (!itemAtStop) return;
-
-          if (!audioChunksRef.current.length) {
-            setRecognizedText("No audio captured");
-            await handleFailedAttempt(itemAtStop, "", null, "retry");
-            return;
-          }
-
-          const actualMime = recorder.mimeType || "audio/webm";
-          const extension = actualMime.includes("mp4")
-            ? "m4a"
-            : actualMime.includes("ogg")
-            ? "ogg"
-            : "webm";
-
-          const audioBlob = new Blob(audioChunksRef.current, {
-            type: actualMime,
-          });
-
-          setStep("Audio captured. Sending to backend...", "info");
-          await sendToWhisper(audioBlob, extension);
-        } finally {
-          if (streamRef.current) {
-            streamRef.current.getTracks().forEach((track) => track.stop());
-            streamRef.current = null;
-          }
-        }
-      };
-
-      recorder.start();
-      setMediaRecorder(recorder);
-      setRecording(true);
-      setRecognizedText(autoMode ? "Listening..." : "Recording...");
-
-      if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
-
-      autoStopTimeoutRef.current = setTimeout(() => {
-        try {
-          setStep("Auto stop triggered. Finishing recording...", "info");
-          if (recorder.state !== "inactive") {
-            recorder.stop();
-          }
-        } catch (err) {
-          console.error(err);
-          setStep("Failed while stopping recording.", "error");
-        } finally {
-          setRecording(false);
-        }
-      }, RECORDING_LENGTH);
-    } catch (error) {
-      console.error(error);
-      setStep("Could not access laptop microphone.", "error");
-      showMessage("❌ Could not access laptop microphone.");
-      setRecording(false);
-      setCheckingAudio(false);
-      setRequestInFlight(false);
-
-      const current = getCurrentItem();
-      if (current) {
-        await handleFailedAttempt(current, "", null, "retry");
-      }
-    }
-  };
-
-  const stopRecording = () => {
-    if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
-
-    if (!mediaRecorder) {
-      setStep("No active recorder found.", "warning");
-      return;
-    }
-
-    if (mediaRecorder.state !== "inactive") {
-      setStep("Manual stop requested.", "warning");
-      mediaRecorder.stop();
-    }
-
-    setRecording(false);
-  };
-
-  const levenshteinDistance = (a, b) => {
-    const matrix = Array.from({ length: b.length + 1 }, () =>
-      Array(a.length + 1).fill(0)
-    );
-
-    for (let i = 0; i <= b.length; i++) matrix[i][0] = i;
-    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-
-    for (let i = 1; i <= b.length; i++) {
-      for (let j = 1; j <= a.length; j++) {
-        if (b.charAt(i - 1) === a.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          );
-        }
-      }
-    }
-
-    return matrix[b.length][a.length];
-  };
-
-  const calculateMatchScore = (target, transcript) => {
-    if (!target || !transcript) return 0;
-
-    const normalize = (text) =>
-      String(text)
-        .toLowerCase()
-        .replace(/[^a-z\s]/g, "")
-        .trim();
-
-    const t = normalize(target);
-    const s = normalize(transcript);
-
-    if (!t || !s) return 0;
-    if (s === t) return 100;
-    if (s.includes(t) || t.includes(s)) return 90;
-
-    const targetWords = t.split(/\s+/).filter(Boolean);
-    const spokenWords = s.split(/\s+/).filter(Boolean);
-
-    let matchedWords = 0;
-
-    targetWords.forEach((word) => {
-      if (
-        spokenWords.some(
-          (spoken) =>
-            spoken === word ||
-            spoken.includes(word) ||
-            word.includes(spoken) ||
-            levenshteinDistance(spoken, word) <= 1
-        )
-      ) {
-        matchedWords += 1;
-      }
-    });
-
-    const wordScore = Math.round(
-      (matchedWords / Math.max(targetWords.length, 1)) * 100
-    );
-
-    const firstLetterBonus = s[0] && t[0] && s[0] === t[0] ? 10 : 0;
-
-    return Math.min(100, wordScore + firstLetterBonus);
-  };
-
-  const calculateItemProgress = (item, transcript) => {
-    const front = calculateMatchScore(item.front || item.title, transcript);
-    const middle = calculateMatchScore(item.middle || item.title, transcript);
-    const end = calculateMatchScore(item.end || item.title, transcript);
-    const overall = Math.round((front + middle + end) / 3);
-
-    return { front, middle, end, overall };
-  };
-
-  const saveProgressTracking = async ({
-    item,
-    transcript,
-    progress,
-    attemptNumber,
-    decision,
-    feedback,
-  }) => {
-    await addDoc(collection(db, "progressTracking"), {
-      childId: childData.id,
-      childName: childData.childName || "",
-      childCode: childData.childCode || "",
-      parentId: childData.parentId || "",
-      parentName: childData.parentName || "",
-      parentEmail: childData.parentEmail || "",
-      therapistUid: childData.therapistUid || "",
-      therapistName: childData.therapistName || "",
-      deviceId: deviceData?.deviceId || deviceId,
-      deviceCode: deviceData?.deviceCode || deviceId,
-      levelId: childData.assignedLevelId || "",
-      levelName: childData.assignedLevelName || "",
-      sessionId: sessionDocId || `${todayKey}-S${sessionNumber}`,
-      sessionNumber,
-      sessionDateKey: todayKey,
-      mode: selectedMode,
-      itemId: item.id,
-      itemTitle: item.title,
-      targetSound: item.sound || "",
-      targetFront: item.front || "",
-      targetMiddle: item.middle || "",
-      targetEnd: item.end || "",
-      transcript: transcript || "",
-      frontScore: progress.front,
-      middleScore: progress.middle,
-      endScore: progress.end,
-      overallScore: progress.overall,
-      attemptNumber,
-      decision,
-      feedback,
-      createdAt: serverTimestamp(),
-    });
-  };
-
-  const sendToWhisper = async (audioBlob, extension = "webm") => {
-    let item = null;
-
-    try {
-      setCheckingAudio(true);
-      setRequestInFlight(true);
-
-      item = getCurrentItem();
-      if (!item) {
-        setStep("No level item found.", "error");
-        showMessage("⚠️ No level item found.");
-        return;
-      }
-
-      setStep("Preparing audio for backend...", "info");
-
-      const formData = new FormData();
-      formData.append("file", audioBlob, `speech.${extension}`);
-      formData.append("childId", childData.id);
-      formData.append("deviceId", deviceData?.deviceId || deviceId);
-
-      setStep("Sending request to backend...", "info");
-
-      const response = await fetch("/api/whisper/transcribe", {
-        method: "POST",
-        body: formData,
-      });
-
-      let data = {};
       try {
-        data = await response.json();
+        const orderedItems = query(itemsRef, orderBy("createdAt", "asc"));
+        const itemSnap = await getDocs(orderedItems);
+        itemDocs = itemSnap.docs;
       } catch {
-        throw new Error("Server did not return valid JSON.");
+        const itemSnap = await getDocs(itemsRef);
+        itemDocs = itemSnap.docs;
       }
 
-      if (!response.ok) {
-        throw new Error(
-          data?.details || data?.error || "Transcription request failed"
-        );
-      }
+      const itemList = itemDocs.map((d) => ({ id: d.id, ...d.data() }));
+      setItems(sortItems(itemList));
 
-      const transcript = (
-        data?.text ||
-        data?.transcript ||
-        data?.recognizedText ||
-        ""
-      ).trim();
-
-      setRecognizedText(transcript || "No clear speech detected");
-      setStep(
-        `Whisper heard: ${transcript || "No clear speech detected"}`,
-        "success"
-      );
-
-      const progress = calculateItemProgress(item, transcript);
-      setCurrentItemProgress(progress);
-
-      const passed = progress.overall >= TARGET_THRESHOLD;
-
-      let feedback = "";
-      let decision = "";
-
-      if (passed) {
-        feedback = `Good job. You said ${item.title || "the word"} well.`;
-        decision = "pass";
+      let loadedPlan = null;
+      if (state?.therapyPlan) {
+        loadedPlan = state.therapyPlan;
+        setTherapyPlanData(state.therapyPlan);
       } else {
-        feedback = `Let's try again. Say ${item.title || "the word"}.`;
-        decision = "retry";
-      }
-
-      setFeedbackText(feedback);
-      speakText(feedback);
-
-      setLastResult({
-        itemTitle: item.title,
-        transcript: transcript || "No speech detected",
-        front: progress.front,
-        middle: progress.middle,
-        end: progress.end,
-        overall: progress.overall,
-      });
-
-      try {
-        await saveItemProgress(item, transcript, progress);
-      } catch (saveError) {
-        console.error("saveItemProgress error:", saveError);
-      }
-
-      try {
-        await updateAggregateReport(item, transcript, progress);
-      } catch (reportError) {
-        console.error("updateAggregateReport error:", reportError);
-      }
-
-      try {
-        await saveProgressTracking({
-          item,
-          transcript,
-          progress,
-          attemptNumber: currentAttempts,
-          decision,
-          feedback,
-        });
-      } catch (trackingError) {
-        console.error("saveProgressTracking error:", trackingError);
-      }
-
-      if (sessionDocId) {
-        try {
-          await setDoc(
-            doc(db, "children", childData.id, "sessions", sessionDocId),
-            {
-              completedItems: increment(passed ? 1 : 0),
-              lastItemId: item.id,
-              lastItemTitle: item.title,
-              lastTranscript: transcript || "",
-              lastFrontScore: progress.front,
-              lastMiddleScore: progress.middle,
-              lastEndScore: progress.end,
-              lastOverallScore: progress.overall,
-              lastAttemptNumber: currentAttempts,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch (sessionError) {
-          console.error("session update error:", sessionError);
+        const planSnap = await getDoc(doc(db, "therapyPlans", state.childId));
+        if (planSnap.exists()) {
+          loadedPlan = { id: planSnap.id, ...planSnap.data() };
+          setTherapyPlanData(loadedPlan);
         }
       }
 
-      if (!passed) {
-        await handleFailedAttempt(item, transcript, progress, "retry");
-        return;
+      const deviceDocId =
+        state?.deviceId || childData.deviceId || childData.deviceCode || "";
+
+      if (deviceDocId) {
+        const deviceSnap = await getDoc(doc(db, "devices", deviceDocId));
+        if (deviceSnap.exists()) {
+          setDeviceInfo({ id: deviceSnap.id, ...deviceSnap.data() });
+        } else {
+          setDeviceInfo({
+            id: deviceDocId,
+            deviceId: childData.deviceId || state?.deviceId || "",
+            deviceCode: childData.deviceCode || state?.deviceCode || "",
+            deviceName: childData.deviceName || state?.deviceName || "Assigned Device",
+            deviceStatus: childData.deviceStatus || "Assigned",
+          });
+        }
       }
 
-      setSavedItemsCount((prev) => prev + 1);
-      setCurrentAttempts(1);
-      setStep("Passed. Moving to next word...", "success");
-      moveToNextWord("✅ Good job. Moving to next word.");
+      const therapyAccess = await evaluateTherapyAvailability(childData, loadedPlan);
+      setTherapyModeAllowed(therapyAccess.allowed);
+      setTherapyRestrictionMessage(therapyAccess.reason || "");
+      if (!therapyAccess.allowed) setSelectedMode("companion");
+
+      setLoading(false);
     } catch (error) {
-      console.error(error);
-      setRecognizedText("Transcription failed");
-      setFeedbackText("We could not check that properly.");
-      speakText("We could not check that properly.");
-      setStep(
-        `Whisper/backend failed: ${error.message || "Unknown error"}`,
-        "error"
-      );
-      showMessage(`❌ Failed to check speech. ${error.message || ""}`);
-
-      const current = getCurrentItem();
-      if (current) {
-        await handleFailedAttempt(current, "", null, "retry");
-      }
-    } finally {
-      setCheckingAudio(false);
-      setRecording(false);
-      setMediaRecorder(null);
-      setRequestInFlight(false);
+      console.error("Load page error:", error);
+      setPageError(error.message || "Failed to load device page.");
+      setLoading(false);
     }
   };
 
-  const saveItemProgress = async (item, transcript, progress) => {
-    await addDoc(collection(db, "children", childData.id, "sessionItems"), {
-      childId: childData.id,
-      childName: childData.childName || "",
-      childCode: childData.childCode || "",
-      parentId: childData.parentId || "",
-      parentName: childData.parentName || "",
-      parentEmail: childData.parentEmail || "",
-      therapistUid: childData.therapistUid || "",
-      therapistName: childData.therapistName || "",
-      levelId: childData.assignedLevelId || "",
-      levelName: childData.assignedLevelName || "",
-      deviceId: deviceData?.deviceId || deviceId,
-      deviceCode: deviceData?.deviceCode || deviceId,
-      sessionId: sessionDocId || `${todayKey}-S${sessionNumber}`,
-      sessionNumber,
-      sessionDateKey: todayKey,
-      mode: selectedMode,
-      itemId: item.id,
-      itemTitle: item.title,
-      sound: item.sound || "",
-      frontWord: item.front || "",
-      middleWord: item.middle || "",
-      endWord: item.end || "",
-      transcript,
-      frontProgress: progress.front,
-      middleProgress: progress.middle,
-      endProgress: progress.end,
-      overallProgress: progress.overall,
-      attemptNumber: currentAttempts,
+  useEffect(() => {
+    loadPageData();
+    return () => {
+      stopPolling();
+      stopTimer();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
+    if (selectedMode !== "therapy") return;
+
+    const maxSeconds = Number(therapyPlanData.sessionDurationMinutes) * 60;
+    if (maxSeconds > 0 && elapsedSeconds >= maxSeconds) {
+      stopPolling();
+      stopTimer();
+      setSessionCompleted(true);
+      setSessionPaused(false);
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+      setStage("Session duration limit reached");
+      setPageError("Session duration limit reached.");
+    }
+  }, [elapsedSeconds, sessionStarted, sessionCompleted, therapyPlanData, selectedMode]);
+
+  const createSession = async () => {
+    if (!child) return "";
+    if (sessionId) return sessionId;
+
+    const sessionRef = await addDoc(collection(db, "sessions"), {
+      childId: child.id,
+      childName: child.childName || state?.childName || "",
+      childCode: child.childCode || state?.childCode || "",
+      parentUid: child.parentUid || auth.currentUser?.uid || "",
+      parentName: parent?.name || child.parentName || "",
+      parentEmail: parent?.email || child.parentEmail || "",
+      parentContact: parent?.contact || child.parentContact || "",
+      therapistUid: therapist?.id || state?.therapistUid || child.therapistUid || "",
+      therapistName: therapist?.name || child.therapistName || "",
+      therapistContact: therapist?.contact || child.therapistContact || "",
+      deviceId: state?.deviceId || child.deviceId || child.deviceCode || "",
+      deviceCode: state?.deviceCode || child.deviceCode || child.deviceId || "",
+      deviceName:
+        state?.deviceName ||
+        child.deviceName ||
+        deviceInfo?.deviceName ||
+        "Assigned Device",
+      levelId: levelInfo?.id || state?.assignedLevelId || child.assignedLevelId || "",
+      levelTitle: levelInfo?.title || child.assignedLevelName || "",
+      therapyPlan: therapyPlanData || null,
+      sessionMode: "therapy",
+      sessionDate: getTodayKey(),
+      startedAt: serverTimestamp(),
+      endedAt: null,
+      status: "active",
+      totalItems: items.length,
+      attemptedItems: 0,
+      exactCount: 0,
+      closeCount: 0,
+      partialCount: 0,
+      incorrectCount: 0,
+      overallScore: 0,
+    });
+
+    setSessionId(sessionRef.id);
+    return sessionRef.id;
+  };
+
+  const saveAttempt = async (resultData, itemData, currentAttempt, activeSessionId) => {
+    if (!activeSessionId || !itemData) return;
+
+    await addDoc(collection(db, "sessions", activeSessionId, "attempts"), {
+      itemId: itemData.id,
+      itemText: itemData.text || "",
+      itemType: itemData.type || "word",
+      itemImage: itemData.imageUrl || "",
+      mp3Track: Number(itemData.mp3Track || 0),
+      attemptNumber: currentAttempt,
+      recognizedText: resultData.recognizedText || "",
+      targetText: resultData.targetText || "",
+      score: resultData.score || 0,
+      matchStatus: resultData.matchStatus || "incorrect",
+      feedback: resultData.feedback || "",
+      feedbackTrack: Number(resultData.feedbackTrack || 0),
+      movedToNext: !!resultData.moveNext,
+      shouldRetry: !!resultData.shouldRetry,
       createdAt: serverTimestamp(),
+      time: resultData.time || new Date().toISOString(),
     });
   };
 
-  const saveSessionSummary = async ({ endedBy, completed }) => {
-    const finalSessionId = sessionDocId || `${todayKey}-S${sessionNumber}`;
+  const updateDailyUsage = async (childData, finalProgress) => {
+    if (!childData?.id || selectedMode !== "therapy") return;
+
+    const todayKey = getTodayKey();
+    const dailyUsageRef = doc(db, "children", childData.id, "dailyUsage", todayKey);
+    const todayCount = await getTodaySessionCount(childData);
 
     await setDoc(
-      doc(db, "children", childData.id, "sessions", finalSessionId),
-      {
-        sessionId: finalSessionId,
-        sessionNumber,
-        sessionDateKey: todayKey,
-        childId: childData.id,
-        childName: childData.childName || "",
-        childCode: childData.childCode || "",
-        parentId: childData.parentId || "",
-        parentName: childData.parentName || "",
-        parentEmail: childData.parentEmail || "",
-        therapistUid: childData.therapistUid || "",
-        therapistName: childData.therapistName || "",
-        levelId: childData.assignedLevelId || "",
-        levelName: childData.assignedLevelName || "",
-        deviceId: deviceData?.deviceId || deviceId,
-        deviceCode: deviceData?.deviceCode || deviceId,
-        mode: selectedMode,
-        durationSeconds: sessionSeconds,
-        completed,
-        endedBy,
-        status: completed ? "completed" : "interrupted",
-        endedAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    await setDoc(
-      doc(db, "children", childData.id, "dailyUsage", todayKey),
+      dailyUsageRef,
       {
         childId: childData.id,
-        childName: childData.childName || "",
-        sessionDateKey: todayKey,
-        sessionCount: increment(1),
-        totalTherapySeconds: increment(sessionSeconds),
+        date: todayKey,
+        sessionCount: todayCount + 1,
         updatedAt: serverTimestamp(),
       },
       { merge: true }
     );
 
     await updateDoc(doc(db, "children", childData.id), {
-      todaySessionCount: increment(1),
       lastSessionDate: todayKey,
+      todaySessionCount: todayCount + 1,
+      latestOverallScore: finalProgress.overallScore,
+      latestSessionCompletedAt: serverTimestamp(),
     });
-
-    const currentCount = await getTodaySessionCount({
-      ...childData,
-      lastSessionDate: todayKey,
-      todaySessionCount: Number(childData.todaySessionCount || 0) + 1,
-    });
-
-    setSessionNumber(currentCount + 1);
   };
 
-  const updateAggregateReport = async (item, transcript, progress) => {
-    const reportRef = doc(db, "children", childData.id, "report", "main");
-    const existing = await getDoc(reportRef);
-    const existingData = existing.exists() ? existing.data() : {};
+  const updateSessionSummary = async (activeSessionId, updatedProgress, completed = false) => {
+    if (!activeSessionId) return;
 
-    const totalCheckedItems = Number(existingData.totalCheckedItems || 0) + 1;
-    const newFrontTotal =
-      Number(existingData.frontProgressTotal || 0) + Number(progress.front);
-    const newMiddleTotal =
-      Number(existingData.middleProgressTotal || 0) + Number(progress.middle);
-    const newEndTotal =
-      Number(existingData.endProgressTotal || 0) + Number(progress.end);
-    const newOverallTotal =
-      Number(existingData.overallProgressTotal || 0) + Number(progress.overall);
+    await updateDoc(doc(db, "sessions", activeSessionId), {
+      attemptedItems: updatedProgress.attemptedItems,
+      exactCount: updatedProgress.exact,
+      closeCount: updatedProgress.close,
+      partialCount: updatedProgress.partial,
+      incorrectCount: updatedProgress.incorrect,
+      overallScore: updatedProgress.overallScore,
+      status: completed ? "completed" : "active",
+      endedAt: completed ? serverTimestamp() : null,
+    });
+  };
 
-    const avgFront = Math.round(newFrontTotal / totalCheckedItems);
-    const avgMiddle = Math.round(newMiddleTotal / totalCheckedItems);
-    const avgEnd = Math.round(newEndTotal / totalCheckedItems);
-    const avgOverall = Math.round(newOverallTotal / totalCheckedItems);
+  const triggerPractice = async (itemData, currentAttempt) => {
+    try {
+      if (!itemData?.text) throw new Error("Current item text is missing.");
 
-    await setDoc(
-      reportRef,
-      {
-        childId: childData.id,
-        childName: childData.childName || "",
-        childCode: childData.childCode || "",
-        parentId: childData.parentId || "",
-        parentName: childData.parentName || "",
-        parentEmail: childData.parentEmail || "",
-        therapistUid: childData.therapistUid || "",
-        therapistName: childData.therapistName || "",
-        therapistId: childData.therapistId || "",
-        levelId: childData.assignedLevelId || "",
-        levelName: childData.assignedLevelName || "",
-        deviceId: deviceData?.deviceId || deviceId,
-        deviceCode: deviceData?.deviceCode || deviceId,
-        totalCheckedItems,
-        totalCompletedItems: totalCheckedItems,
+      const parsedTrack = Number(itemData.mp3Track || 0);
+      if (!parsedTrack || parsedTrack < 1) {
+        throw new Error("Current item MP3 track is missing or invalid.");
+      }
+
+      setIsBusy(true);
+      setIsListening(false);
+      setToyPromptActive(true);
+      setPageError("");
+      setLatestResult(null);
+      setStage("Sending item to toy...");
+
+      const activeSessionId = await createSession();
+
+      const response = await fetch(`${SERVER}/practice-trigger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: itemData.type || "word",
+          itemId: itemData.id,
+          type: itemData.type || "word",
+          targetText: itemData.text || "",
+          displayText: itemData.displayText || itemData.text || "",
+          attempt: currentAttempt,
+          sessionId: activeSessionId,
+          mp3Track: parsedTrack,
+          promptDelayMs: Number(itemData.promptDelayMs || 2500),
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to trigger practice");
+
+      const taskKey = data?.task?.taskKey || "";
+      setStage("Prompt is playing...");
+      startPolling(itemData, currentAttempt, activeSessionId, taskKey);
+    } catch (error) {
+      console.error("Trigger error:", error);
+      setStage("Trigger failed");
+      setPageError(error.message || "Failed to trigger practice.");
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+    }
+  };
+
+  const startPolling = (itemData, currentAttempt, activeSessionId, taskKey = "") => {
+    stopPolling();
+    pollStartedAtRef.current = Date.now();
+
+    pollRef.current = setInterval(async () => {
+      try {
+        if (pollStartedAtRef.current && Date.now() - pollStartedAtRef.current > POLL_TIMEOUT_MS) {
+          stopPolling();
+          setIsListening(false);
+          setToyPromptActive(false);
+          setStage("Polling timeout");
+          setPageError("No response received in time.");
+          setIsBusy(false);
+          return;
+        }
+
+        const url = taskKey
+          ? `${SERVER}/practice-result?taskKey=${encodeURIComponent(taskKey)}`
+          : `${SERVER}/practice-result`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!data.ready) {
+          if (data.stage === "waiting-for-esp") {
+            setToyPromptActive(true);
+            setIsListening(false);
+            setStage("Preparing...");
+          } else if (data.stage === "playing-prompt") {
+            setToyPromptActive(true);
+            setIsListening(false);
+            setStage("Playing prompt...");
+          } else if (data.stage === "listening") {
+            setToyPromptActive(false);
+            setIsListening(true);
+            setStage("Listening...");
+          } else if (data.stage === "processing-whisper") {
+            setToyPromptActive(false);
+            setIsListening(false);
+            setStage("Checking response...");
+          } else {
+            setStage("Waiting...");
+          }
+          return;
+        }
+
+        stopPolling();
+        setIsListening(false);
+        setToyPromptActive(false);
+        await handlePracticeResult(data, itemData, currentAttempt, activeSessionId);
+      } catch (error) {
+        console.error("Polling error:", error);
+        stopPolling();
+        setIsListening(false);
+        setToyPromptActive(false);
+        setStage("Polling failed");
+        setPageError(error.message || "Polling failed.");
+        setIsBusy(false);
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  const handlePracticeResult = async (resultData, itemData, currentAttempt, activeSessionId) => {
+    setLatestResult(resultData);
+    setStage("Result received");
+
+    await saveAttempt(resultData, itemData, currentAttempt, activeSessionId);
+
+    let updatedProgress = null;
+
+    setProgress((prev) => {
+      const next = { ...prev };
+
+      if (resultData.moveNext) {
+        next.attemptedItems += 1;
+        if (resultData.matchStatus === "exact") next.exact += 1;
+        else if (resultData.matchStatus === "close") next.close += 1;
+        else if (resultData.matchStatus === "partial") next.partial += 1;
+        else next.incorrect += 1;
+      }
+
+      next.overallScore =
+        next.attemptedItems > 0
+          ? Math.round(
+              ((next.exact * 100 +
+                next.close * 80 +
+                next.partial * 50 +
+                next.incorrect * 20) /
+                (next.attemptedItems * 100)) *
+                100
+            )
+          : 0;
+
+      updatedProgress = next;
+      return next;
+    });
+
+    if (updatedProgress) {
+      await updateSessionSummary(activeSessionId, updatedProgress, false);
+    }
+
+    if (resultData.shouldRetry && currentAttempt < MAX_ATTEMPTS) {
+      const nextAttempt = currentAttempt + 1;
+      setAttempt(nextAttempt);
+      setStage(`Try again ${nextAttempt}/${MAX_ATTEMPTS}`);
+
+      setTimeout(() => {
+        triggerPractice(itemData, nextAttempt);
+      }, 1600);
+
+      return;
+    }
+
+    setAttempt(1);
+
+    if (currentIndex + 1 < items.length) {
+      setStage("Moving to next item...");
+      setTimeout(() => {
+        setLatestResult(null);
+        setPageError("");
+        setCurrentIndex((prev) => prev + 1);
+        setIsBusy(false);
+      }, 1800);
+    } else if (updatedProgress) {
+      await finishTherapySession(activeSessionId, updatedProgress);
+    }
+  };
+
+  const finishTherapySession = async (activeSessionId, finalProgress) => {
+    setSessionCompleted(true);
+    setSessionPaused(false);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setStage("Session completed");
+    stopTimer();
+
+    await updateSessionSummary(activeSessionId, finalProgress, true);
+    await updateDailyUsage(child, finalProgress);
+
+    try {
+      await addDoc(collection(db, "sessionSummaries"), {
+        sessionId: activeSessionId,
+        childId: child?.id || state?.childId || "",
+        childName: child?.childName || state?.childName || "",
+        childCode: child?.childCode || state?.childCode || "",
+        levelId: levelInfo?.id || "",
+        levelTitle: levelInfo?.title || "",
+        sessionMode: "therapy",
         totalItems: items.length,
-        lastCheckedItemId: item.id,
-        lastCheckedItemTitle: item.title,
-        lastSound: item.sound || "",
-        lastTranscript: transcript,
-        currentMode: selectedMode || "therapy",
-        frontProgressTotal: newFrontTotal,
-        middleProgressTotal: newMiddleTotal,
-        endProgressTotal: newEndTotal,
-        overallProgressTotal: newOverallTotal,
-        frontAverage: avgFront,
-        middleAverage: avgMiddle,
-        endAverage: avgEnd,
-        overallProgress: avgOverall,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+        attemptedItems: finalProgress.attemptedItems,
+        exactCount: finalProgress.exact,
+        closeCount: finalProgress.close,
+        partialCount: finalProgress.partial,
+        incorrectCount: finalProgress.incorrect,
+        overallScore: finalProgress.overallScore,
+        createdAt: serverTimestamp(),
+        elapsedSeconds,
+      });
+    } catch (error) {
+      console.error("Summary save error:", error);
+    }
   };
 
-  const currentItem = getCurrentItem();
+  const startCompanionMode = async () => {
+    try {
+      setIsBusy(true);
+      setPageError("");
+      setStage("Starting companion mode...");
+
+      const response = await fetch(`${SERVER}/companion-start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          childId: child?.id || "",
+          childName: child?.childName || "",
+          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
+          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to start companion mode");
+
+      setStage(data.message || "Companion mode active");
+      setLatestResult(null);
+      setIsBusy(false);
+    } catch (error) {
+      console.error("Companion mode error:", error);
+      setPageError(error.message || "Failed to start companion mode.");
+      setStage("Companion mode failed");
+      setIsBusy(false);
+    }
+  };
+
+  const stopCompanionMode = async () => {
+    try {
+      await fetch(`${SERVER}/companion-stop`, { method: "POST" });
+    } catch (error) {
+      console.error("Companion stop error:", error);
+    }
+  };
+
+  const beginSession = async () => {
+    setPageError("");
+    setSessionBlocked(false);
+
+    if (selectedMode === "therapy") {
+      const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+      setTherapyModeAllowed(therapyAccess.allowed);
+      setTherapyRestrictionMessage(therapyAccess.reason || "");
+
+      if (!therapyAccess.allowed) {
+        setSelectedMode("companion");
+        setSessionBlocked(true);
+        setPageError(therapyAccess.reason);
+        setStage("Therapy mode unavailable");
+        return;
+      }
+
+      if (!items.length) {
+        setSessionBlocked(true);
+        setPageError("No items found in the assigned level.");
+        return;
+      }
+
+      setSessionStarted(true);
+      setSessionCompleted(false);
+      setSessionPaused(false);
+      setCurrentIndex(0);
+      setAttempt(1);
+      setElapsedSeconds(0);
+      setProgress({
+        attemptedItems: 0,
+        exact: 0,
+        close: 0,
+        partial: 0,
+        incorrect: 0,
+        overallScore: 0,
+      });
+      setLatestResult(null);
+      setStage("Therapy session started");
+      startTimer();
+      return;
+    }
+
+    setSessionStarted(true);
+    setSessionCompleted(false);
+    setSessionPaused(false);
+    setElapsedSeconds(0);
+    setLatestResult(null);
+    setStage("Ready for companion mode");
+    startTimer();
+    await startCompanionMode();
+  };
+
+  const pauseSession = () => {
+    if (!sessionStarted || sessionCompleted || sessionPaused) return;
+
+    stopPolling();
+    stopTimer();
+    setSessionPaused(true);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setStage(selectedMode === "therapy" ? "Session paused" : "Companion mode paused");
+  };
+
+  const resumeSession = async () => {
+    if (!sessionStarted || sessionCompleted || !sessionPaused) return;
+    setSessionPaused(false);
+    startTimer();
+    setStage(selectedMode === "therapy" ? "Session resumed" : "Companion mode resumed");
+  };
+
+  const endSession = async () => {
+    stopPolling();
+    stopTimer();
+
+    if (selectedMode === "companion") {
+      await stopCompanionMode();
+      setSessionStarted(false);
+      setSessionCompleted(true);
+      setSessionPaused(false);
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+      setStage("Companion mode ended");
+      return;
+    }
+
+    if (!sessionId) {
+      setSessionStarted(false);
+      setSessionCompleted(true);
+      setSessionPaused(false);
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+      setStage("Session ended");
+      return;
+    }
+
+    const finalProgress = { ...progress };
+    await finishTherapySession(sessionId, finalProgress);
+  };
+
+  const restartSession = async () => {
+    stopPolling();
+    stopTimer();
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset error:", error);
+    }
+
+    if (selectedMode === "companion") {
+      await stopCompanionMode();
+    }
+
+    setSessionId("");
+    setSessionStarted(false);
+    setSessionCompleted(false);
+    setSessionBlocked(false);
+    setSessionPaused(false);
+    setCurrentIndex(0);
+    setAttempt(1);
+    setStage("Ready");
+    setLatestResult(null);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setElapsedSeconds(0);
+    setProgress({
+      attemptedItems: 0,
+      exact: 0,
+      close: 0,
+      partial: 0,
+      incorrect: 0,
+      overallScore: 0,
+    });
+    setPageError("");
+
+    const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+    setTherapyModeAllowed(therapyAccess.allowed);
+    setTherapyRestrictionMessage(therapyAccess.reason || "");
+    if (!therapyAccess.allowed) setSelectedMode("companion");
+  };
+
+  const startCurrentItem = async () => {
+    if (selectedMode === "companion") {
+      await startCompanionMode();
+      return;
+    }
+
+    if (!currentItem || isBusy || sessionCompleted || sessionPaused) return;
+
+    if (!currentItem.text) {
+      setPageError("Current item text is missing.");
+      return;
+    }
+
+    if (!currentItem.mp3Track || Number(currentItem.mp3Track) < 1) {
+      setPageError("Current item MP3 track is missing or invalid.");
+      return;
+    }
+
+    setPageError("");
+    await triggerPractice(currentItem, attempt);
+  };
+
+  const handleModeChange = async (mode) => {
+    if (sessionStarted && !sessionCompleted) return;
+
+    if (mode === "therapy") {
+      const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+      setTherapyModeAllowed(therapyAccess.allowed);
+      setTherapyRestrictionMessage(therapyAccess.reason || "");
+
+      if (!therapyAccess.allowed) {
+        setSelectedMode("companion");
+        setPageError(therapyAccess.reason);
+        return;
+      }
+    }
+
+    setPageError("");
+    setSelectedMode(mode);
+    setStage(mode === "therapy" ? "Ready for therapy session" : "Ready for companion mode");
+  };
+
+  if (loading) {
+    return (
+      <div className="device-page">
+        <div className="device-loading">Loading device page...</div>
+      </div>
+    );
+  }
 
   return (
-    <div className="device-page">
-      <div className="device-topbar">
-        <div>
-          <h1>Pineda Device Interface</h1>
-          <p>Laptop microphone testing version</p>
+    <div className={`device-page ${selectedMode === "companion" ? "companion-theme" : ""}`}>
+      <div className="device-shell">
+        <div className="device-top-strip">
+          <div className="strip-card">
+            <span>Child</span>
+            <strong>{child?.childName || state?.childName || "-"}</strong>
+            <small>{child?.childCode || state?.childCode || "-"}</small>
+          </div>
+
+          <div className="strip-card">
+            <span>Level</span>
+            <strong>{levelInfo?.title || child?.assignedLevelName || "-"}</strong>
+            <small>{items.length} items</small>
+          </div>
+
+          <div className="strip-card">
+            <span>Device</span>
+            <strong>{deviceInfo?.deviceName || state?.deviceName || "-"}</strong>
+            <small>{deviceInfo?.deviceStatus || "-"}</small>
+          </div>
+
+          <div className="strip-card timer-card">
+            <span>Session Timer</span>
+            <strong>{formatTime(elapsedSeconds)}</strong>
+          </div>
         </div>
 
-        <button className="back-btn" onClick={() => navigate(-1)}>
-          Back
-        </button>
-      </div>
-
-      {message && <div className="device-message-box">{message}</div>}
-
-      {loading ? (
-        <div className="device-card">Loading device...</div>
-      ) : !childData ? (
-        <div className="device-card">Child not found.</div>
-      ) : (
-        <>
-          <div className="device-summary-grid">
-            <div className="device-card">
-              <h3>Child</h3>
-              <p><strong>Name:</strong> {childData.childName || "N/A"}</p>
-              <p><strong>Code:</strong> {childData.childCode || "N/A"}</p>
-              <p><strong>Parent:</strong> {childData.parentName || "N/A"}</p>
-              <p><strong>Parent Email:</strong> {childData.parentEmail || "N/A"}</p>
-            </div>
-
-            <div className="device-card">
-              <h3>Device</h3>
-              <p><strong>Device ID:</strong> {deviceData?.deviceId || deviceId}</p>
-              <p><strong>Name:</strong> {deviceData?.deviceName || "N/A"}</p>
-              <p><strong>Status:</strong> {deviceData?.deviceStatus || "N/A"}</p>
-              <p><strong>Level:</strong> {childData.assignedLevelName || "N/A"}</p>
-            </div>
-
-            <div className="device-card">
-              <h3>Session Info</h3>
-              <p><strong>Session Number:</strong> {sessionNumber}</p>
-              <p><strong>Timer:</strong> {formatSeconds(sessionSeconds)}</p>
-              <p><strong>Mode:</strong> {selectedMode || "Not selected"}</p>
-              <p>
-                <strong>Therapy Status:</strong>{" "}
-                {sessionEnded
-                  ? "Ended"
-                  : sessionPaused
-                  ? "Paused"
-                  : therapyAllowed
-                  ? "Allowed"
-                  : "Blocked"}
-              </p>
-              <p><strong>Saved Items:</strong> {savedItemsCount} / {items.length}</p>
-            </div>
+        {!therapyModeAllowed && (
+          <div className="device-banner warning-banner">
+            <strong>Companion mode only.</strong> {therapyRestrictionMessage}
           </div>
+        )}
 
-          <div className="device-card mode-card">
-            <div className="mode-header">
-              <h2>Select Mode</h2>
-              {!therapyAllowed && therapyBlockedReason && (
-                <span className="mode-warning">{therapyBlockedReason}</span>
-              )}
-            </div>
-
-            <div className="mode-toggle-row">
-              <button
-                className={`mode-toggle-btn ${selectedMode === "therapy" ? "active-mode-btn" : ""}`}
-                onClick={() => handleModeChange("therapy")}
-                disabled={!therapyAllowed}
-              >
-                Therapy Mode
-              </button>
-
-              <button
-                className={`mode-toggle-btn ${selectedMode === "companion" ? "active-mode-btn" : ""}`}
-                onClick={() => handleModeChange("companion")}
-              >
-                Companion Mode
-              </button>
-            </div>
+        {pageError && (
+          <div className="device-banner error-banner">
+            <strong>Error:</strong> {pageError}
           </div>
+        )}
 
-          {selectedMode === "therapy" && (
-            <div className="device-main-grid">
-              <div className="device-card therapy-item-card">
-                <div className="section-head">
-                  <h2>Current Level Item</h2>
-
-                  {!sessionStarted && !sessionEnded ? (
-                    <button className="primary-btn" onClick={startTherapySession}>
-                      Start Session
-                    </button>
-                  ) : (
-                    <span className="session-live-badge">
-                      {sessionEnded
-                        ? "Session Ended"
-                        : sessionPaused
-                        ? "Session Paused"
-                        : "Session Active"}
-                    </span>
-                  )}
-                </div>
-
-                {!currentItem ? (
-                  <p className="empty-text">No items found in this level.</p>
-                ) : (
-                  <>
-                    <div className="current-item-box">
-                      <p><strong>Level:</strong> {levelData?.title || levelData?.levelName || childData.assignedLevelName || "N/A"}</p>
-                      <p><strong>Item:</strong> {currentItem.title || "N/A"}</p>
-                      <p><strong>Sound:</strong> {currentItem.sound || "N/A"}</p>
-                      <p><strong>Front:</strong> {currentItem.front || "N/A"}</p>
-                      <p><strong>Middle:</strong> {currentItem.middle || "N/A"}</p>
-                      <p><strong>End:</strong> {currentItem.end || "N/A"}</p>
-                      <p><strong>Item Position:</strong> {currentItemIndex + 1} / {items.length}</p>
-                    </div>
-
-                    {currentItem.imageUrl && (
-                      <div className="current-item-image-wrap">
-                        <img
-                          src={currentItem.imageUrl}
-                          alt={currentItem.title}
-                          className="current-item-image"
-                        />
-                      </div>
-                    )}
-
-                    <div className="mic-controls">
-                      <button
-                        className="primary-btn"
-                        onClick={() => startRecording(false)}
-                        disabled={
-                          !sessionStarted ||
-                          sessionEnded ||
-                          sessionPaused ||
-                          recording ||
-                          checkingAudio ||
-                          requestInFlight
-                        }
-                      >
-                        {recording ? "Listening..." : "Start Mic Manually"}
-                      </button>
-
-                      <button
-                        className="secondary-btn"
-                        onClick={stopRecording}
-                        disabled={!recording}
-                      >
-                        Stop Mic
-                      </button>
-
-                      {!sessionPaused ? (
-                        <button
-                          className="pause-btn"
-                          onClick={pauseSession}
-                          disabled={!sessionStarted || sessionEnded}
-                        >
-                          Pause
-                        </button>
-                      ) : (
-                        <button
-                          className="resume-btn"
-                          onClick={resumeSession}
-                          disabled={!sessionStarted || sessionEnded}
-                        >
-                          Resume
-                        </button>
-                      )}
-
-                      <button
-                        className="restart-btn"
-                        onClick={restartSession}
-                        disabled={checkingAudio || requestInFlight}
-                      >
-                        Restart Session
-                      </button>
-
-                      <button
-                        className="interrupt-btn"
-                        onClick={interruptSession}
-                        disabled={!sessionStarted || sessionEnded}
-                      >
-                        End Session
-                      </button>
-                    </div>
-
-                    <div className={`device-step-alert ${stepType}`}>
-                      <strong>Device Status:</strong> {stepAlert}
-                    </div>
-
-                    <div className="device-debug-box">
-                      <p><strong>Recognized Text:</strong> {recognizedText || "-"}</p>
-                      <p><strong>Feedback:</strong> {feedbackText || "-"}</p>
-                      <p><strong>Attempt:</strong> {currentAttempts} / {MAX_ATTEMPTS}</p>
-                      <p><strong>Target Threshold:</strong> {TARGET_THRESHOLD}%</p>
-                      <p><strong>Recording:</strong> {recording ? "Yes" : "No"}</p>
-                      <p><strong>Checking Audio:</strong> {checkingAudio ? "Yes" : "No"}</p>
-                      <p><strong>Request Running:</strong> {requestInFlight ? "Yes" : "No"}</p>
-                      <p><strong>Current Item Index:</strong> {currentItemIndex + 1}</p>
-                      <p><strong>Saved Items:</strong> {savedItemsCount}</p>
-                    </div>
-
-                    <div className="transcript-box">
-                      <h4>Live Status</h4>
-                      <p>{recognizedText || "Waiting..."}</p>
-                    </div>
-
-                    <div className="transcript-box">
-                      <h4>Feedback</h4>
-                      <p>{feedbackText || "Waiting for feedback..."}</p>
-                    </div>
-
-                    <div className="transcript-box">
-                      <h4>Last Checked Result</h4>
-                      <p><strong>Item:</strong> {lastResult.itemTitle || "None yet"}</p>
-                      <p><strong>Text:</strong> {lastResult.transcript || "No result yet"}</p>
-                      <p>
-                        <strong>Scores:</strong> Front {lastResult.front}% | Middle {lastResult.middle}% | End {lastResult.end}% | Overall {lastResult.overall}%
-                      </p>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="device-card progress-card">
-                <h2>Item Progress</h2>
-
-                <div className="progress-group">
-                  <label>Front</label>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${currentItemProgress.front}%` }} />
-                  </div>
-                  <span>{currentItemProgress.front}%</span>
-                </div>
-
-                <div className="progress-group">
-                  <label>Middle</label>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${currentItemProgress.middle}%` }} />
-                  </div>
-                  <span>{currentItemProgress.middle}%</span>
-                </div>
-
-                <div className="progress-group">
-                  <label>End</label>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${currentItemProgress.end}%` }} />
-                  </div>
-                  <span>{currentItemProgress.end}%</span>
-                </div>
-
-                <div className="progress-group">
-                  <label>Overall</label>
-                  <div className="progress-bar">
-                    <div className="progress-fill" style={{ width: `${currentItemProgress.overall}%` }} />
-                  </div>
-                  <span>{currentItemProgress.overall}%</span>
-                </div>
-
-                <div className="plan-box">
-                  <p><strong>Max Sessions / Day:</strong> {therapyPlan?.maxSessionsPerDay ?? "N/A"}</p>
-                  <p><strong>Session Duration:</strong> {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins</p>
-                  <p><strong>Min Gap Between Sessions:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {selectedMode === "companion" && (
-            <div className="device-card companion-card">
-              <h2>Companion Mode</h2>
-              <div className="companion-box">
-                <h4>Hello {childData.childName || "Child"} 👋</h4>
-                <p>This is the simple companion mode for now.</p>
-                <p>Later you can connect the ESP toy here.</p>
+        <div className={`device-layout ${selectedMode === "companion" ? "companion-layout" : ""}`}>
+          <div className="main-device-card">
+            <div className="hero-header">
+              <div className="hero-heading">
+                <span className={`mode-pill ${selectedMode}`}>
+                  {selectedMode === "therapy" ? "Therapy Mode" : "Companion Mode"}
+                </span>
+                <h1>Speech Practice Device</h1>
                 <p>
-                  {currentItem
-                    ? `Current practice sound: ${currentItem.sound || currentItem.title}`
-                    : "No level items available."}
+                  {selectedMode === "therapy"
+                    ? "A guided smart therapy experience for focused speech practice."
+                    : "A gentle companion experience with simple interaction."}
                 </p>
               </div>
+
+              <div className="mode-switch">
+                <button
+                  type="button"
+                  className={`mode-btn ${selectedMode === "therapy" ? "active" : ""} ${
+                    !therapyModeAllowed ? "disabled" : ""
+                  }`}
+                  onClick={() => handleModeChange("therapy")}
+                  disabled={!therapyModeAllowed || (sessionStarted && !sessionCompleted)}
+                >
+                  Therapy
+                </button>
+
+                <button
+                  type="button"
+                  className={`mode-btn ${selectedMode === "companion" ? "active companion" : ""}`}
+                  onClick={() => handleModeChange("companion")}
+                  disabled={sessionStarted && !sessionCompleted}
+                >
+                  Companion
+                </button>
+              </div>
             </div>
-          )}
-        </>
-      )}
+
+            <div className={`practice-zone ${selectedMode === "companion" ? "companion-only" : ""}`}>
+              <div className="practice-hero">
+                <div className="practice-status-row">
+                  <div className="status-chip">
+                    {selectedMode === "therapy"
+                      ? `Item ${items.length > 0 ? currentIndex + 1 : 0} / ${items.length}`
+                      : "Friendly Interaction"}
+                  </div>
+                  <div className="status-chip secondary">
+                    {selectedMode === "therapy" ? currentItem?.type || "-" : "interactive"}
+                  </div>
+                </div>
+
+                {selectedMode === "therapy" ? (
+                  <>
+                    <div className="image-frame">
+                      {currentItem?.imageUrl ? (
+                        <img
+                          src={currentItem.imageUrl}
+                          alt={currentItem.text || "practice item"}
+                          className="item-image"
+                        />
+                      ) : (
+                        <div className="image-placeholder">No image available</div>
+                      )}
+                    </div>
+
+                    <div className="word-area">
+                      <h2>{currentItem?.text || "No item found"}</h2>
+                      <p>{friendlyFeedback}</p>
+                    </div>
+
+                    <div className="live-status-box">
+                      <span>Live Status</span>
+                      <strong>
+                        {isListening
+                          ? "Listening..."
+                          : toyPromptActive
+                          ? "Playing prompt..."
+                          : stage}
+                      </strong>
+                    </div>
+                  </>
+                ) : (
+                  <div className="companion-center-card">
+                    <div className="companion-emoji">🧸</div>
+                    <h2>Companion Interaction</h2>
+                    <p>Press start to activate companion mode on the device.</p>
+                  </div>
+                )}
+
+                <div className="control-row">
+                  {!sessionStarted ? (
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={beginSession}
+                      disabled={
+                        (selectedMode === "therapy" && (!therapyModeAllowed || items.length === 0)) ||
+                        sessionBlocked
+                      }
+                    >
+                      Start Session
+                    </button>
+                  ) : sessionPaused ? (
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={resumeSession}
+                      disabled={sessionCompleted}
+                    >
+                      Resume Session
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={startCurrentItem}
+                      disabled={
+                        selectedMode === "therapy"
+                          ? isBusy ||
+                            sessionCompleted ||
+                            sessionPaused ||
+                            !currentItem ||
+                            !currentItem.text ||
+                            !currentItem.mp3Track
+                          : isBusy || sessionCompleted || sessionPaused
+                      }
+                    >
+                      {selectedMode === "therapy"
+                        ? isBusy
+                          ? "Working..."
+                          : "Start Practice"
+                        : isBusy
+                        ? "Starting..."
+                        : "Start Companion"}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={pauseSession}
+                    disabled={!sessionStarted || sessionCompleted || sessionPaused}
+                  >
+                    Pause
+                  </button>
+
+                  <button
+                    type="button"
+                    className="danger-btn"
+                    onClick={endSession}
+                    disabled={!sessionStarted || sessionCompleted}
+                  >
+                    End
+                  </button>
+
+                  <button type="button" className="ghost-btn" onClick={restartSession}>
+                    Restart
+                  </button>
+                </div>
+              </div>
+
+              {selectedMode === "therapy" && (
+                <div className="therapy-side-panel">
+                  <div className="side-panel-card">
+                    <span className="side-label">Session Progress</span>
+                    <div className="progress-ring-box">
+                      <strong>{completionPercent}%</strong>
+                      <small>Completed</small>
+                    </div>
+
+                    <div className="progress-bar-wrap">
+                      <div className="progress-bar">
+                        <div className="progress-fill" style={{ width: `${completionPercent}%` }} />
+                      </div>
+                    </div>
+
+                    <p>
+                      {progress.attemptedItems} of {items.length} items attempted
+                    </p>
+                  </div>
+
+                  <div className="side-panel-card highlight">
+                    <span className="side-label">Overall Progress</span>
+                    <strong className="overall-score">{progress.overallScore}%</strong>
+                    <p>Overall session progress based on completed practice items.</p>
+                  </div>
+
+                  <div className="side-panel-card">
+                    <span className="side-label">Current Status</span>
+                    <div className="status-grid">
+                      <div>
+                        <small>Stage</small>
+                        <strong>{stage}</strong>
+                      </div>
+                      <div>
+                        <small>Attempt</small>
+                        <strong>{attempt}/{MAX_ATTEMPTS}</strong>
+                      </div>
+                      <div>
+                        <small>Status</small>
+                        <strong>
+                          {sessionCompleted
+                            ? "Completed"
+                            : sessionPaused
+                            ? "Paused"
+                            : sessionStarted
+                            ? "Active"
+                            : "Ready"}
+                        </strong>
+                      </div>
+                      <div>
+                        <small>Mode</small>
+                        <strong>{selectedMode}</strong>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

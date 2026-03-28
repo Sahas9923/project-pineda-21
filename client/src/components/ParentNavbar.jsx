@@ -12,9 +12,10 @@ const ParentNavbar = () => {
 
   const [showDropdown, setShowDropdown] = useState(false);
   const [parentData, setParentData] = useState({
-    name: "",
+    name: "Parent",
     email: "",
     parentId: "",
+    imageUrl: "",
   });
 
   useEffect(() => {
@@ -28,20 +29,23 @@ const ParentNavbar = () => {
 
         if (parentSnap.exists()) {
           const data = parentSnap.data();
+
           setParentData({
             name: data.name || "Parent",
             email: data.email || user.email || "",
             parentId: data.parentId || "",
+            imageUrl: data.imageUrl || "",
           });
         } else {
           setParentData({
             name: "Parent",
             email: user.email || "",
             parentId: "",
+            imageUrl: "",
           });
         }
       } catch (error) {
-        console.error("Error fetching parent navbar data:", error);
+        console.error("Error fetching parent data:", error);
       }
     };
 
@@ -49,22 +53,22 @@ const ParentNavbar = () => {
   }, []);
 
   useEffect(() => {
-    const handleClickOutside = (event) => {
+    const handleOutsideClick = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setShowDropdown(false);
       }
     };
 
-    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handleOutsideClick);
+
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("mousedown", handleOutsideClick);
     };
   }, []);
 
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      alert("✅ Logged out successfully!");
       navigate("/");
     } catch (error) {
       console.error("Logout error:", error);
@@ -73,58 +77,92 @@ const ParentNavbar = () => {
   };
 
   return (
-    <div className="parent-navbar">
-      <h2 className="logo">🧸 Pineda</h2>
-
-      <div className="nav-links">
-        <NavLink to="/parent-dashboard">Dashboard</NavLink>
-        <NavLink to="/child-info">Child Info</NavLink>
-        <NavLink to="/progress">Progress</NavLink>
+    <header className="parent-navbar">
+      <div className="navbar-left">
+        <h2 className="navbar-logo" onClick={() => navigate("/parent-dashboard")}>
+          🧸 Pineda
+        </h2>
       </div>
 
-      <div className="navbar-profile-wrapper" ref={dropdownRef}>
-        <div
-          className="navbar-profile"
-          onClick={() => setShowDropdown(!showDropdown)}
-        >
-          <div className="profile-icon">👤</div>
+      <nav className="navbar-center">
+        <NavLink to="/parent-dashboard" className="nav-link">
+          Dashboard
+        </NavLink>
 
-          <div className="profile-text">
-            <p className="profile-name">{parentData.name || "Parent"}</p>
-            <p className="profile-email">{parentData.email}</p>
+        <NavLink to="/child-info" className="nav-link">
+          Child Info
+        </NavLink>
+
+        <NavLink to="/progress" className="nav-link">
+          Progress
+        </NavLink>
+      </nav>
+
+      <div className="navbar-right" ref={dropdownRef}>
+        <button
+          type="button"
+          className="navbar-profile-btn"
+          onClick={() => setShowDropdown((prev) => !prev)}
+        >
+          {parentData.imageUrl ? (
+            <img
+              src={parentData.imageUrl}
+              alt="Parent"
+              className="navbar-avatar"
+            />
+          ) : (
+            <div className="navbar-avatar-fallback">👤</div>
+          )}
+
+          <div className="navbar-user-text">
+            <span className="navbar-user-name">{parentData.name}</span>
           </div>
 
-          <span className="dropdown-arrow">{showDropdown ? "▲" : "▼"}</span>
-        </div>
+          <span className="navbar-arrow">{showDropdown ? "▲" : "▼"}</span>
+        </button>
 
         {showDropdown && (
-          <div className="profile-dropdown">
-            <div className="dropdown-user-info">
-              <div className="dropdown-avatar">👤</div>
-              <div>
-                <h4>{parentData.name || "Parent"}</h4>
-                <p>{parentData.email}</p>
-                <p>{parentData.parentId}</p>
+          <div className="navbar-dropdown">
+            <div className="navbar-dropdown-top">
+              {parentData.imageUrl ? (
+                <img
+                  src={parentData.imageUrl}
+                  alt="Parent"
+                  className="navbar-dropdown-avatar"
+                />
+              ) : (
+                <div className="navbar-dropdown-avatar-fallback">👤</div>
+              )}
+
+              <div className="navbar-dropdown-user">
+                <h4>{parentData.name}</h4>
+                <p>{parentData.email || "No email"}</p>
+                <p>{parentData.parentId || "No parent ID"}</p>
               </div>
             </div>
 
             <button
-              className="dropdown-btn"
+              type="button"
+              className="navbar-dropdown-btn"
               onClick={() => {
                 setShowDropdown(false);
-                navigate("/settings");
+                navigate("/parent-settings");
               }}
             >
               ⚙️ Profile / Settings
             </button>
 
-            <button className="dropdown-btn logout-btn" onClick={handleLogout}>
+            <button
+              type="button"
+              className="navbar-dropdown-btn navbar-logout-btn"
+              onClick={handleLogout}
+            >
               🚪 Logout
             </button>
           </div>
         )}
       </div>
-    </div>
+    </header>
   );
 };
 

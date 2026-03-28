@@ -323,3 +323,17 @@ body {
     flex-direction: column;
   }
 }
+
+.item-action-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.item-edit-form {
+  width: 100%;
+}
+
+.item-edit-form .item-image {
+  margin-bottom: 12px;
+}

@@ -12,6 +12,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -30,7 +31,17 @@ const ChildInfo = () => {
   const [savingChild, setSavingChild] = useState(false);
   const [message, setMessage] = useState("");
 
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [editingChild, setEditingChild] = useState(false);
+  const [updatingChild, setUpdatingChild] = useState(false);
+
   const [childForm, setChildForm] = useState({
+    childName: "",
+    age: "",
+    gender: "",
+  });
+
+  const [editChildForm, setEditChildForm] = useState({
     childName: "",
     age: "",
     gender: "",
@@ -38,6 +49,9 @@ const ChildInfo = () => {
 
   const [childImageFile, setChildImageFile] = useState(null);
   const [childImagePreview, setChildImagePreview] = useState("");
+
+  const [editChildImageFile, setEditChildImageFile] = useState(null);
+  const [editChildImagePreview, setEditChildImagePreview] = useState("");
 
   useEffect(() => {
     fetchChildren();
@@ -128,13 +142,17 @@ const ChildInfo = () => {
         parentEmail:
           childDoc.data().parentEmail || parentData.email || user.email || "",
         parentId: childDoc.data().parentId || parentData.parentId || "",
-        parentContact: childDoc.data().parentContact || parentData.phone || "",
+        parentContact:
+          childDoc.data().parentContact ||
+          parentData.contact ||
+          parentData.phone ||
+          "",
       }));
 
       setChildrenList(children);
 
       if (children.length > 0) {
-        await handleViewChild(children[0]);
+        setSelectedChild(children[0]);
       } else {
         setSelectedChild(null);
         setTherapyPlan(null);
@@ -175,6 +193,15 @@ const ChildInfo = () => {
         .slice(0, 5);
 
       setRecentTimeline(timelineData);
+      setEditChildForm({
+        childName: child.childName || "",
+        age: child.age || "",
+        gender: child.gender || "",
+      });
+      setEditChildImagePreview(child.childImageUrl || "");
+      setEditChildImageFile(null);
+      setEditingChild(false);
+      setShowDetailsModal(true);
     } catch (error) {
       console.error("Error loading child details:", error);
       showMessage("❌ Failed to load child details.");
@@ -189,12 +216,28 @@ const ChildInfo = () => {
     }));
   };
 
+  const handleEditFormChange = (e) => {
+    const { name, value } = e.target;
+    setEditChildForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
   const handleChildImageChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     setChildImageFile(file);
     setChildImagePreview(URL.createObjectURL(file));
+  };
+
+  const handleEditChildImageChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setEditChildImageFile(file);
+    setEditChildImagePreview(URL.createObjectURL(file));
   };
 
   const handleAddChild = async (e) => {
@@ -252,7 +295,7 @@ const ChildInfo = () => {
         parentName: parentData.name || "Parent",
         parentEmail: parentData.email || user.email || "",
         parentId: parentData.parentId || "",
-        parentContact: parentData.phone || "",
+        parentContact: parentData.contact || parentData.phone || "",
 
         therapistUid: "",
         therapistName: "",
@@ -302,6 +345,74 @@ const ChildInfo = () => {
       showMessage("❌ Failed to add child.");
     } finally {
       setSavingChild(false);
+    }
+  };
+
+  const handleUpdateChild = async (e) => {
+    e.preventDefault();
+
+    if (!selectedChild) {
+      showMessage("❌ No child selected.");
+      return;
+    }
+
+    if (!editChildForm.childName.trim()) {
+      showMessage("❌ Please enter child name.");
+      return;
+    }
+
+    if (!editChildForm.age) {
+      showMessage("❌ Please enter child age.");
+      return;
+    }
+
+    if (!editChildForm.gender) {
+      showMessage("❌ Please select child gender.");
+      return;
+    }
+
+    try {
+      setUpdatingChild(true);
+
+      let updatedImageUrl = selectedChild.childImageUrl || "";
+
+      if (editChildImageFile) {
+        const user = auth.currentUser;
+        const fileName = `${Date.now()}-${editChildImageFile.name}`;
+        const storageRef = ref(storage, `children/${user.uid}/${fileName}`);
+        await uploadBytes(storageRef, editChildImageFile);
+        updatedImageUrl = await getDownloadURL(storageRef);
+      }
+
+      await updateDoc(doc(db, "children", selectedChild.id), {
+        childName: editChildForm.childName.trim(),
+        age: Number(editChildForm.age),
+        gender: editChildForm.gender,
+        childImageUrl: updatedImageUrl,
+      });
+
+      await addDoc(collection(db, "children", selectedChild.id, "timeline"), {
+        title: "Child profile updated",
+        description: `${editChildForm.childName.trim()}'s information was updated by parent.`,
+        createdAt: serverTimestamp(),
+      });
+
+      showMessage("✅ Child information updated successfully.");
+      setEditingChild(false);
+      await fetchChildren();
+
+      const updatedChildDoc = await getDoc(doc(db, "children", selectedChild.id));
+      if (updatedChildDoc.exists()) {
+        await handleViewChild({
+          id: updatedChildDoc.id,
+          ...updatedChildDoc.data(),
+        });
+      }
+    } catch (error) {
+      console.error("Error updating child:", error);
+      showMessage("❌ Failed to update child.");
+    } finally {
+      setUpdatingChild(false);
     }
   };
 
@@ -466,8 +577,8 @@ const ChildInfo = () => {
           <div>
             <h1>Child Information</h1>
             <p>
-              Add children, view all child cards, open full details, and access
-              the assigned device safely.
+              Manage children, view full profiles, update child info, and open
+              assigned devices safely.
             </p>
           </div>
 
@@ -482,8 +593,11 @@ const ChildInfo = () => {
         {message && <div className="message-box">{message}</div>}
 
         {showAddChildForm && (
-          <div className="info-card add-child-form-card">
-            <h2>Add New Child</h2>
+          <div className="info-card add-child-form-card glass-card">
+            <div className="section-head">
+              <h2>Add New Child</h2>
+              <p>Create a new child profile with image and basic details.</p>
+            </div>
 
             <form className="add-child-form" onSubmit={handleAddChild}>
               <div className="form-grid">
@@ -553,9 +667,18 @@ const ChildInfo = () => {
         {loading ? (
           <div className="info-state-card">Loading child information...</div>
         ) : childrenList.length === 0 ? (
-          <div className="info-state-card">No children added yet.</div>
+          <div className="info-state-card empty-state-card">
+            <div className="empty-icon">🧸</div>
+            <h3>No children added yet</h3>
+            <p>Click “Add Child” to create the first child profile.</p>
+          </div>
         ) : (
-          <>
+          <div className="children-list-section">
+            <div className="section-head">
+              <h2>Children List</h2>
+              <p>Select a child card and open more details.</p>
+            </div>
+
             <div className="children-cards-grid">
               {childrenList.map((child) => (
                 <div
@@ -564,79 +687,141 @@ const ChildInfo = () => {
                   }`}
                   key={child.id}
                 >
-                  {child.childImageUrl ? (
-                    <img
-                      src={child.childImageUrl}
-                      alt={child.childName}
-                      className="child-card-image"
-                    />
-                  ) : (
-                    <div className="child-card-placeholder">🧒</div>
-                  )}
+                  <div className="child-card-top">
+                    {child.childImageUrl ? (
+                      <img
+                        src={child.childImageUrl}
+                        alt={child.childName}
+                        className="child-card-image"
+                      />
+                    ) : (
+                      <div className="child-card-placeholder">🧒</div>
+                    )}
 
-                  <h3>{child.childName || "Child"}</h3>
-
-                  <p>
-                    <strong>Code:</strong> {child.childCode || "N/A"}
-                  </p>
-
-                  <p>
-                    <strong>Age:</strong> {child.age || "N/A"}
-                  </p>
-
-                  <p>
-                    <strong>Level:</strong>{" "}
-                    {child.assignedLevelName || "Not assigned"}
-                  </p>
-
-                  <button
-                    className="view-more-btn"
-                    onClick={() => handleViewChild(child)}
-                  >
-                    View More
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {selectedChild && (
-              <>
-                <div className="child-top-grid">
-                  <div className="info-card child-profile-card">
-                    <div className="child-profile-top">
-                      {selectedChild.childImageUrl ? (
-                        <img
-                          src={selectedChild.childImageUrl}
-                          alt={selectedChild.childName}
-                          className="child-photo"
-                        />
-                      ) : (
-                        <div className="child-photo-placeholder">🧒</div>
-                      )}
-
-                      <div>
-                        <h2>{selectedChild.childName || "Child"}</h2>
-                        <p>
-                          <strong>Child Code:</strong>{" "}
-                          {selectedChild.childCode || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Age:</strong> {selectedChild.age || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Gender:</strong>{" "}
-                          {selectedChild.gender || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Status:</strong>{" "}
-                          {selectedChild.status || "N/A"}
-                        </p>
-                      </div>
+                    <div className="child-status-badge">
+                      {child.status || "active"}
                     </div>
                   </div>
 
-                  <div className="info-card assigned-level-card">
-                    <h2>Assigned Level</h2>
+                  <h3>{child.childName || "Child"}</h3>
+
+                  <div className="child-mini-info">
+                    <p>
+                      <strong>Code</strong>
+                      <span>{child.childCode || "N/A"}</span>
+                    </p>
+                    <p>
+                      <strong>Age</strong>
+                      <span>{child.age || "N/A"}</span>
+                    </p>
+                    <p>
+                      <strong>Level</strong>
+                      <span>{child.assignedLevelName || "Not assigned"}</span>
+                    </p>
+                  </div>
+
+                  <div className="child-card-actions">
+                    <button
+                      className="view-more-btn"
+                      onClick={() => handleViewChild(child)}
+                    >
+                      More
+                    </button>
+
+                    <button
+                      className="card-open-device-btn"
+                      onClick={() => handleOpenDevice(child)}
+                    >
+                      Open Device
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showDetailsModal && selectedChild && (
+        <div
+          className="details-modal-overlay"
+          onClick={() => {
+            setShowDetailsModal(false);
+            setEditingChild(false);
+          }}
+        >
+          <div
+            className="details-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="details-modal-header">
+              <div>
+                <h2>Child Full Information</h2>
+                <p>View complete child details and update profile information.</p>
+              </div>
+
+              <button
+                className="close-modal-btn"
+                onClick={() => {
+                  setShowDetailsModal(false);
+                  setEditingChild(false);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {!editingChild ? (
+              <>
+                <div className="details-hero-card">
+                  <div className="details-hero-left">
+                    {selectedChild.childImageUrl ? (
+                      <img
+                        src={selectedChild.childImageUrl}
+                        alt={selectedChild.childName}
+                        className="details-child-photo"
+                      />
+                    ) : (
+                      <div className="details-child-photo placeholder">🧒</div>
+                    )}
+
+                    <div className="details-hero-text">
+                      <h3>{selectedChild.childName || "Child"}</h3>
+                      <p>
+                        <strong>Child Code:</strong> {selectedChild.childCode || "N/A"}
+                      </p>
+                      <p>
+                        <strong>Age:</strong> {selectedChild.age || "N/A"}
+                      </p>
+                      <p>
+                        <strong>Gender:</strong> {selectedChild.gender || "N/A"}
+                      </p>
+                      <p>
+                        <strong>Status:</strong> {selectedChild.status || "N/A"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="details-hero-actions">
+                    <button
+                      className="edit-child-btn"
+                      onClick={() => setEditingChild(true)}
+                    >
+                      Edit Child Info
+                    </button>
+
+                    <button
+                      className="open-device-btn"
+                      onClick={() => handleOpenDevice(selectedChild)}
+                    >
+                      Open Device
+                    </button>
+                  </div>
+                </div>
+
+                <div className="details-grid">
+                  <div className="info-card">
+                    <h3>Assigned Level</h3>
                     <p>
                       <strong>Level:</strong>{" "}
                       {selectedChild.assignedLevelName || "Not assigned"}
@@ -655,45 +840,29 @@ const ChildInfo = () => {
                       {reportData?.totalItems ?? 0}
                     </p>
                   </div>
-                </div>
 
-                <div className="child-middle-grid">
-                  <div className="info-card therapist-card">
-                    <h2>Assigned Therapist</h2>
-                    <div className="therapist-section">
-                      {selectedChild.therapistImageUrl ? (
-                        <img
-                          src={selectedChild.therapistImageUrl}
-                          alt={selectedChild.therapistName}
-                          className="therapist-photo"
-                        />
-                      ) : (
-                        <div className="therapist-photo-placeholder">👩‍⚕️</div>
-                      )}
-
-                      <div className="therapist-text">
-                        <p>
-                          <strong>Name:</strong>{" "}
-                          {selectedChild.therapistName || "Not assigned"}
-                        </p>
-                        <p>
-                          <strong>Therapist ID:</strong>{" "}
-                          {selectedChild.therapistId || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Email:</strong>{" "}
-                          {selectedChild.therapistEmail || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Contact:</strong>{" "}
-                          {selectedChild.therapistContact || "N/A"}
-                        </p>
-                      </div>
-                    </div>
+                  <div className="info-card">
+                    <h3>Assigned Therapist</h3>
+                    <p>
+                      <strong>Name:</strong>{" "}
+                      {selectedChild.therapistName || "Not assigned"}
+                    </p>
+                    <p>
+                      <strong>Therapist ID:</strong>{" "}
+                      {selectedChild.therapistId || "N/A"}
+                    </p>
+                    <p>
+                      <strong>Email:</strong>{" "}
+                      {selectedChild.therapistEmail || "N/A"}
+                    </p>
+                    <p>
+                      <strong>Contact:</strong>{" "}
+                      {selectedChild.therapistContact || "N/A"}
+                    </p>
                   </div>
 
-                  <div className="info-card parent-link-card">
-                    <h2>Parent Link</h2>
+                  <div className="info-card">
+                    <h3>Parent Link</h3>
                     <p>
                       <strong>Parent Name:</strong>{" "}
                       {selectedChild.parentName || "N/A"}
@@ -711,11 +880,9 @@ const ChildInfo = () => {
                       {selectedChild.parentContact || "N/A"}
                     </p>
                   </div>
-                </div>
 
-                <div className="child-middle-grid">
-                  <div className="info-card device-card">
-                    <h2>Assigned Device</h2>
+                  <div className="info-card">
+                    <h3>Assigned Device</h3>
                     <p>
                       <strong>Assigned:</strong>{" "}
                       {selectedChild.deviceAssigned ? "Yes" : "No"}
@@ -736,17 +903,10 @@ const ChildInfo = () => {
                       <strong>Status:</strong>{" "}
                       {selectedChild.deviceStatus || "N/A"}
                     </p>
-
-                    <button
-                      className="open-device-btn"
-                      onClick={() => handleOpenDevice(selectedChild)}
-                    >
-                      Open Device
-                    </button>
                   </div>
 
-                  <div className="info-card plan-card">
-                    <h2>Therapy Plan</h2>
+                  <div className="info-card">
+                    <h3>Therapy Plan</h3>
                     <p>
                       <strong>Maximum Sessions / Day:</strong>{" "}
                       {therapyPlan?.maxSessionsPerDay ?? "N/A"}
@@ -771,34 +931,34 @@ const ChildInfo = () => {
                         : "No lock rule"}
                     </p>
                   </div>
-                </div>
 
-                <div className="info-card recommendation-card">
-                  <h2>Therapist Recommendation</h2>
-                  <p>
-                    <strong>Summary:</strong>{" "}
-                    {reportData?.therapistSummary || "No summary yet"}
-                  </p>
-                  <p>
-                    <strong>Recommendation:</strong>{" "}
-                    {reportData?.overallRecommendation || "No recommendation yet"}
-                  </p>
-                  <p>
-                    <strong>Home Advice:</strong>{" "}
-                    {reportData?.homeAdvice || "No home advice yet"}
-                  </p>
-                  <p>
-                    <strong>Strongest Area:</strong>{" "}
-                    {reportData?.strongestArea || "N/A"}
-                  </p>
-                  <p>
-                    <strong>Support Area:</strong>{" "}
-                    {reportData?.supportArea || "N/A"}
-                  </p>
+                  <div className="info-card">
+                    <h3>Therapist Recommendation</h3>
+                    <p>
+                      <strong>Summary:</strong>{" "}
+                      {reportData?.therapistSummary || "No summary yet"}
+                    </p>
+                    <p>
+                      <strong>Recommendation:</strong>{" "}
+                      {reportData?.overallRecommendation || "No recommendation yet"}
+                    </p>
+                    <p>
+                      <strong>Home Advice:</strong>{" "}
+                      {reportData?.homeAdvice || "No home advice yet"}
+                    </p>
+                    <p>
+                      <strong>Strongest Area:</strong>{" "}
+                      {reportData?.strongestArea || "N/A"}
+                    </p>
+                    <p>
+                      <strong>Support Area:</strong>{" "}
+                      {reportData?.supportArea || "N/A"}
+                    </p>
+                  </div>
                 </div>
 
                 <div className="info-card timeline-card">
-                  <h2>Recent Updates</h2>
+                  <h3>Recent Updates</h3>
 
                   {recentTimeline.length === 0 ? (
                     <p className="empty-text">No recent updates yet.</p>
@@ -820,10 +980,99 @@ const ChildInfo = () => {
                   )}
                 </div>
               </>
+            ) : (
+              <div className="info-card edit-child-card">
+                <div className="section-head">
+                  <h3>Edit Child Information</h3>
+                  <p>Update basic child details without changing the rest of the page flow.</p>
+                </div>
+
+                <form className="add-child-form" onSubmit={handleUpdateChild}>
+                  <div className="form-grid">
+                    <input
+                      type="text"
+                      name="childName"
+                      placeholder="Child Name"
+                      value={editChildForm.childName}
+                      onChange={handleEditFormChange}
+                    />
+
+                    <input
+                      type="number"
+                      name="age"
+                      placeholder="Age"
+                      min="1"
+                      value={editChildForm.age}
+                      onChange={handleEditFormChange}
+                    />
+
+                    <select
+                      name="gender"
+                      value={editChildForm.gender}
+                      onChange={handleEditFormChange}
+                    >
+                      <option value="">Select Gender</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                    </select>
+                  </div>
+
+                  <div className="image-upload-section">
+                    <label className="image-upload-label" htmlFor="editChildImageUpload">
+                      Change Image
+                    </label>
+
+                    <input
+                      id="editChildImageUpload"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleEditChildImageChange}
+                      className="image-upload-input"
+                    />
+
+                    {editChildImagePreview && (
+                      <div className="preview-wrap">
+                        <img
+                          src={editChildImagePreview}
+                          alt="Child Preview"
+                          className="image-preview"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="edit-actions-row">
+                    <button
+                      type="button"
+                      className="cancel-edit-btn"
+                      onClick={() => {
+                        setEditingChild(false);
+                        setEditChildForm({
+                          childName: selectedChild.childName || "",
+                          age: selectedChild.age || "",
+                          gender: selectedChild.gender || "",
+                        });
+                        setEditChildImagePreview(selectedChild.childImageUrl || "");
+                        setEditChildImageFile(null);
+                      }}
+                    >
+                      Cancel
+                    </button>
+
+                    <button
+                      type="submit"
+                      className="save-child-btn"
+                      disabled={updatingChild}
+                    >
+                      {updatingChild ? "Updating..." : "Update Child"}
+                    </button>
+                  </div>
+                </form>
+              </div>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

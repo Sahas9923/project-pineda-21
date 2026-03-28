@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import TherapistNavbar from "../components/TherapistNavbar";
 import "../styles/Patients.css";
+
 import { auth, db } from "../firebase/config";
 import {
   addDoc,
@@ -8,6 +9,8 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -17,13 +20,21 @@ import {
 } from "firebase/firestore";
 
 const TherapistPatients = () => {
-  const [assignedPatients, setAssignedPatients] = useState([]);
-  const [allChildren, setAllChildren] = useState([]);
-  const [selectedPatient, setSelectedPatient] = useState(null);
-
-  const [searchText, setSearchText] = useState("");
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+
+  const [therapistData, setTherapistData] = useState(null);
+  const [allChildren, setAllChildren] = useState([]);
+  const [assignedPatients, setAssignedPatients] = useState([]);
+  const [levels, setLevels] = useState([]);
+
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [therapyPlan, setTherapyPlan] = useState(null);
+  const [reportData, setReportData] = useState(null);
+  const [patientTimeline, setPatientTimeline] = useState([]);
+
+  const [searchText, setSearchText] = useState("");
+  const [selectedTab, setSelectedTab] = useState("overview");
 
   const [showAssignPanel, setShowAssignPanel] = useState(false);
   const [assigningPatient, setAssigningPatient] = useState(false);
@@ -39,13 +50,6 @@ const TherapistPatients = () => {
   const [savingDeviceEdit, setSavingDeviceEdit] = useState(false);
   const [savingPlanEdit, setSavingPlanEdit] = useState(false);
 
-  const [therapistData, setTherapistData] = useState(null);
-  const [therapyPlan, setTherapyPlan] = useState(null);
-  const [reportData, setReportData] = useState(null);
-
-  const [levels, setLevels] = useState([]);
-  const [selectedTab, setSelectedTab] = useState("overview");
-
   const [assignPatientForm, setAssignPatientForm] = useState({
     childId: "",
     therapistId: "",
@@ -60,6 +64,9 @@ const TherapistPatients = () => {
     sessionDurationMinutes: 20,
     minimumGapBetweenSessionsMinutes: 30,
     lockTherapyAfterLimit: true,
+    therapyStartTime: "",
+    therapyEndTime: "",
+    fallbackMode: "companion",
   });
 
   const [levelEditForm, setLevelEditForm] = useState({
@@ -77,6 +84,9 @@ const TherapistPatients = () => {
     sessionDurationMinutes: 20,
     minimumGapBetweenSessionsMinutes: 30,
     lockTherapyAfterLimit: true,
+    therapyStartTime: "",
+    therapyEndTime: "",
+    fallbackMode: "companion",
   });
 
   useEffect(() => {
@@ -86,6 +96,16 @@ const TherapistPatients = () => {
   const showMessage = (text) => {
     setMessage(text);
     setTimeout(() => setMessage(""), 3500);
+  };
+
+  const formatDate = (value) => {
+    if (!value) return "No date";
+    try {
+      const date = value?.toDate ? value.toDate() : new Date(value);
+      return date.toLocaleDateString();
+    } catch {
+      return "Invalid date";
+    }
   };
 
   const generateDeviceCodeFromCounter = async () => {
@@ -122,7 +142,11 @@ const TherapistPatients = () => {
       setLoading(true);
 
       const user = auth.currentUser;
-      if (!user) return;
+      if (!user) {
+        showMessage("❌ Therapist account not found.");
+        setLoading(false);
+        return;
+      }
 
       const therapistRef = doc(db, "therapists", user.uid);
       const therapistSnap = await getDoc(therapistRef);
@@ -150,7 +174,6 @@ const TherapistPatients = () => {
         id: d.id,
         ...d.data(),
       }));
-
       setAssignedPatients(assignedData);
 
       const childrenSnap = await getDocs(collection(db, "children"));
@@ -168,11 +191,12 @@ const TherapistPatients = () => {
       setLevels(levelsData);
 
       if (assignedData.length > 0) {
-        await handleSelectPatient(assignedData[0]);
+        await handleSelectPatient(assignedData[0], assignedData);
       } else {
         setSelectedPatient(null);
         setTherapyPlan(null);
         setReportData(null);
+        setPatientTimeline([]);
       }
     } catch (error) {
       console.error("Error fetching patients data:", error);
@@ -182,25 +206,38 @@ const TherapistPatients = () => {
     }
   };
 
-  const handleSelectPatient = async (patient) => {
+  const handleSelectPatient = async (patient, sourceAssignedPatients = null) => {
     try {
-      setSelectedPatient(patient);
+      const freshPatient =
+        sourceAssignedPatients?.find((p) => p.id === patient.id) || patient;
+
+      setSelectedPatient(freshPatient);
       setSelectedTab("overview");
 
-      const planSnap = await getDoc(doc(db, "therapyPlans", patient.id));
+      const planSnap = await getDoc(doc(db, "therapyPlans", freshPatient.id));
       const planData = planSnap.exists() ? planSnap.data() : null;
       setTherapyPlan(planData);
 
       const reportSnap = await getDoc(
-        doc(db, "children", patient.id, "report", "main")
+        doc(db, "children", freshPatient.id, "report", "main")
       );
       setReportData(reportSnap.exists() ? reportSnap.data() : null);
 
+      const timelineQuery = query(
+        collection(db, "children", freshPatient.id, "timeline"),
+        orderBy("createdAt", "desc"),
+        limit(6)
+      );
+      const timelineSnap = await getDocs(timelineQuery);
+      const timelineData = timelineSnap.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+      setPatientTimeline(timelineData);
+
       setDeviceForm({
-        deviceName: patient.deviceName || "Pineda Companion Device",
-        maxSessionsPerDay: planData
-          ? Number(planData.maxSessionsPerDay || 3)
-          : 3,
+        deviceName: freshPatient.deviceName || "Pineda Companion Device",
+        maxSessionsPerDay: planData ? Number(planData.maxSessionsPerDay || 3) : 3,
         sessionDurationMinutes: planData
           ? Number(planData.sessionDurationMinutes || 20)
           : 20,
@@ -210,16 +247,19 @@ const TherapistPatients = () => {
         lockTherapyAfterLimit: planData
           ? !!planData.lockTherapyAfterLimit
           : true,
+        therapyStartTime: planData?.therapyStartTime || "",
+        therapyEndTime: planData?.therapyEndTime || "",
+        fallbackMode: planData?.fallbackMode || "companion",
       });
 
       setLevelEditForm({
-        levelId: patient.assignedLevelId || "",
-        levelName: patient.assignedLevelName || "",
+        levelId: freshPatient.assignedLevelId || "",
+        levelName: freshPatient.assignedLevelName || "",
       });
 
       setDeviceEditForm({
-        deviceName: patient.deviceName || "Pineda Companion Device",
-        deviceStatus: patient.deviceStatus || "Assigned",
+        deviceName: freshPatient.deviceName || "Pineda Companion Device",
+        deviceStatus: freshPatient.deviceStatus || "Assigned",
       });
 
       setPlanEditForm({
@@ -233,6 +273,9 @@ const TherapistPatients = () => {
         lockTherapyAfterLimit: planData
           ? !!planData.lockTherapyAfterLimit
           : true,
+        therapyStartTime: planData?.therapyStartTime || "",
+        therapyEndTime: planData?.therapyEndTime || "",
+        fallbackMode: planData?.fallbackMode || "companion",
       });
     } catch (error) {
       console.error("Error selecting patient:", error);
@@ -242,16 +285,29 @@ const TherapistPatients = () => {
 
   const handleAssignPatientFormChange = (e) => {
     const { name, value } = e.target;
-
     setAssignPatientForm((prev) => ({
       ...prev,
       [name]: value,
     }));
   };
 
+  const handleLevelChange = (e) => {
+    const levelId = e.target.value;
+    const selectedLevel = levels.find((level) => level.id === levelId);
+
+    setAssignPatientForm((prev) => ({
+      ...prev,
+      levelId,
+      levelName:
+        selectedLevel?.title ||
+        selectedLevel?.levelName ||
+        selectedLevel?.name ||
+        "",
+    }));
+  };
+
   const handleDeviceFormChange = (e) => {
     const { name, value, type, checked } = e.target;
-
     setDeviceForm((prev) => ({
       ...prev,
       [name]: type === "checkbox" ? checked : value,
@@ -288,24 +344,8 @@ const TherapistPatients = () => {
     }));
   };
 
-  const handleLevelChange = (e) => {
-    const levelId = e.target.value;
-    const selectedLevel = levels.find((level) => level.id === levelId);
-
-    setAssignPatientForm((prev) => ({
-      ...prev,
-      levelId,
-      levelName:
-        selectedLevel?.title ||
-        selectedLevel?.levelName ||
-        selectedLevel?.name ||
-        "",
-    }));
-  };
-
   const filteredAssignedPatients = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
-
     if (!keyword) return assignedPatients;
 
     return assignedPatients.filter((patient) => {
@@ -326,6 +366,29 @@ const TherapistPatients = () => {
   const availableChildrenToAssign = useMemo(() => {
     return allChildren.filter((child) => !child.therapistUid);
   }, [allChildren]);
+
+  const stats = useMemo(() => {
+    const totalAssigned = assignedPatients.length;
+    const withDevice = assignedPatients.filter((p) => p.deviceAssigned).length;
+    const withLevel = assignedPatients.filter((p) => p.assignedLevelId).length;
+    const progressValues = assignedPatients.map((p) =>
+      Number(p.overallProgress || 0)
+    );
+    const avgProgress =
+      progressValues.length > 0
+        ? Math.round(
+            progressValues.reduce((sum, val) => sum + val, 0) /
+              progressValues.length
+          )
+        : 0;
+
+    return {
+      totalAssigned,
+      withDevice,
+      withLevel,
+      avgProgress,
+    };
+  }, [assignedPatients]);
 
   const handleAssignPatient = async (e) => {
     e.preventDefault();
@@ -353,20 +416,21 @@ const TherapistPatients = () => {
         therapistUid: user.uid,
         therapistName: therapistData.name || "Therapist",
         therapistEmail: therapistData.email || user.email || "",
-        therapistContact: therapistData.phone || therapistData.contactNo || "",
+        therapistContact: therapistData.contact || "",
         therapistId: therapistData.therapistId || "",
+        therapistImageUrl: therapistData.imageUrl || "",
         assignedLevelId: assignPatientForm.levelId,
         assignedLevelName: assignPatientForm.levelName,
+        updatedAt: serverTimestamp(),
       });
 
-      await addDoc(
-        collection(db, "children", assignPatientForm.childId, "timeline"),
-        {
-          title: "Patient assigned by therapist",
-          description: `${therapistData.name || "Therapist"} assigned level ${assignPatientForm.levelName}.`,
-          createdAt: serverTimestamp(),
-        }
-      );
+      await addDoc(collection(db, "children", assignPatientForm.childId, "timeline"), {
+        title: "Patient assigned by therapist",
+        description: `${
+          therapistData.name || "Therapist"
+        } assigned level ${assignPatientForm.levelName}.`,
+        createdAt: serverTimestamp(),
+      });
 
       setAssignPatientForm({
         childId: "",
@@ -420,21 +484,18 @@ const TherapistPatients = () => {
       return;
     }
 
-    if (!deviceForm.maxSessionsPerDay || Number(deviceForm.maxSessionsPerDay) < 1) {
+    if (Number(deviceForm.maxSessionsPerDay) < 1) {
       showMessage("❌ Max sessions per day must be at least 1.");
       return;
     }
 
-    if (!deviceForm.sessionDurationMinutes || Number(deviceForm.sessionDurationMinutes) < 1) {
+    if (Number(deviceForm.sessionDurationMinutes) < 1) {
       showMessage("❌ Session duration must be at least 1 minute.");
       return;
     }
 
-    if (
-      !deviceForm.minimumGapBetweenSessionsMinutes &&
-      Number(deviceForm.minimumGapBetweenSessionsMinutes) !== 0
-    ) {
-      showMessage("❌ Please enter minimum gap between sessions.");
+    if (Number(deviceForm.minimumGapBetweenSessionsMinutes) < 0) {
+      showMessage("❌ Minimum gap between sessions is invalid.");
       return;
     }
 
@@ -449,6 +510,7 @@ const TherapistPatients = () => {
         deviceCode: generatedDeviceCode,
         deviceName: deviceForm.deviceName.trim(),
         deviceStatus: "Assigned",
+        updatedAt: serverTimestamp(),
       });
 
       await setDoc(
@@ -465,6 +527,9 @@ const TherapistPatients = () => {
             deviceForm.minimumGapBetweenSessionsMinutes
           ),
           lockTherapyAfterLimit: !!deviceForm.lockTherapyAfterLimit,
+          therapyStartTime: deviceForm.therapyStartTime || "",
+          therapyEndTime: deviceForm.therapyEndTime || "",
+          fallbackMode: deviceForm.fallbackMode || "companion",
           modesAllowed: ["therapy", "companion"],
           modeSelectionAtDevice: true,
           updatedAt: serverTimestamp(),
@@ -489,6 +554,7 @@ const TherapistPatients = () => {
           parentId: selectedPatient.parentId || "",
           parentEmail: selectedPatient.parentEmail || "",
           assignedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
           modesAllowed: ["therapy", "companion"],
         },
         { merge: true }
@@ -496,7 +562,7 @@ const TherapistPatients = () => {
 
       await addDoc(collection(db, "children", selectedPatient.id, "timeline"), {
         title: "Device assigned",
-        description: `Device ${generatedDeviceCode} assigned with daily limits and consecutive session rules.`,
+        description: `Device ${generatedDeviceCode} assigned with therapy rules.`,
         createdAt: serverTimestamp(),
       });
 
@@ -526,6 +592,7 @@ const TherapistPatients = () => {
       await updateDoc(doc(db, "children", selectedPatient.id), {
         assignedLevelId: levelEditForm.levelId,
         assignedLevelName: levelEditForm.levelName,
+        updatedAt: serverTimestamp(),
       });
 
       await setDoc(
@@ -577,6 +644,7 @@ const TherapistPatients = () => {
       await updateDoc(doc(db, "children", selectedPatient.id), {
         deviceName: deviceEditForm.deviceName.trim(),
         deviceStatus: deviceEditForm.deviceStatus,
+        updatedAt: serverTimestamp(),
       });
 
       await setDoc(
@@ -613,23 +681,17 @@ const TherapistPatients = () => {
 
     if (!selectedPatient) return;
 
-    if (!planEditForm.maxSessionsPerDay || Number(planEditForm.maxSessionsPerDay) < 1) {
+    if (Number(planEditForm.maxSessionsPerDay) < 1) {
       showMessage("❌ Max sessions per day must be at least 1.");
       return;
     }
 
-    if (
-      !planEditForm.sessionDurationMinutes ||
-      Number(planEditForm.sessionDurationMinutes) < 1
-    ) {
+    if (Number(planEditForm.sessionDurationMinutes) < 1) {
       showMessage("❌ Session duration must be at least 1 minute.");
       return;
     }
 
-    if (
-      Number(planEditForm.minimumGapBetweenSessionsMinutes) < 0 ||
-      planEditForm.minimumGapBetweenSessionsMinutes === ""
-    ) {
+    if (Number(planEditForm.minimumGapBetweenSessionsMinutes) < 0) {
       showMessage("❌ Minimum gap between sessions is invalid.");
       return;
     }
@@ -651,6 +713,9 @@ const TherapistPatients = () => {
             planEditForm.minimumGapBetweenSessionsMinutes
           ),
           lockTherapyAfterLimit: !!planEditForm.lockTherapyAfterLimit,
+          therapyStartTime: planEditForm.therapyStartTime || "",
+          therapyEndTime: planEditForm.therapyEndTime || "",
+          fallbackMode: planEditForm.fallbackMode || "companion",
           modesAllowed: ["therapy", "companion"],
           modeSelectionAtDevice: true,
           updatedAt: serverTimestamp(),
@@ -680,14 +745,61 @@ const TherapistPatients = () => {
       <TherapistNavbar />
 
       <div className="therapist-patients-container">
-        <div className="patients-header">
-          <h1>Therapist Patients</h1>
-          <p>
-            Search assigned patients, assign patient and level, assign device, and edit level, device info, and therapy plan.
-          </p>
-        </div>
+        <section className="patients-hero-card">
+          <div>
+            <span className="patients-badge">👩‍⚕️ Patient Management</span>
+            <h1>Therapist Patients</h1>
+            <p>
+              Assign children, manage levels and devices, configure therapy plans,
+              and monitor each child’s journey from one clean workspace.
+            </p>
+          </div>
 
-        <div className="patients-toolbar">
+          <div className="patients-hero-actions">
+            <button
+              className="assign-patient-btn"
+              onClick={() => setShowAssignPanel(!showAssignPanel)}
+            >
+              {showAssignPanel ? "Close Assign Panel" : "+ Assign Patient"}
+            </button>
+          </div>
+        </section>
+
+        <section className="patients-stats-grid">
+          <div className="patients-stat-card">
+            <div className="patients-stat-icon">👶</div>
+            <div>
+              <h3>{stats.totalAssigned}</h3>
+              <p>Assigned Patients</p>
+            </div>
+          </div>
+
+          <div className="patients-stat-card">
+            <div className="patients-stat-icon">📘</div>
+            <div>
+              <h3>{stats.withLevel}</h3>
+              <p>With Assigned Level</p>
+            </div>
+          </div>
+
+          <div className="patients-stat-card">
+            <div className="patients-stat-icon">🧸</div>
+            <div>
+              <h3>{stats.withDevice}</h3>
+              <p>With Assigned Device</p>
+            </div>
+          </div>
+
+          <div className="patients-stat-card">
+            <div className="patients-stat-icon">📈</div>
+            <div>
+              <h3>{stats.avgProgress}%</h3>
+              <p>Average Progress</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="patients-toolbar">
           <div className="search-box">
             <input
               type="text"
@@ -696,20 +808,16 @@ const TherapistPatients = () => {
               onChange={(e) => setSearchText(e.target.value)}
             />
           </div>
-
-          <button
-            className="assign-patient-btn"
-            onClick={() => setShowAssignPanel(!showAssignPanel)}
-          >
-            {showAssignPanel ? "Close Assign Panel" : "+ Assign Patient"}
-          </button>
-        </div>
+        </section>
 
         {message && <div className="message-box">{message}</div>}
 
         {showAssignPanel && (
-          <div className="assign-panel-card">
-            <h2>Assign Patient</h2>
+          <section className="assign-panel-card">
+            <div className="card-head">
+              <h2>Assign Patient</h2>
+              <p>Select an unassigned child and assign a level.</p>
+            </div>
 
             <form className="assign-form" onSubmit={handleAssignPatient}>
               <div className="assign-grid">
@@ -756,15 +864,18 @@ const TherapistPatients = () => {
                 {assigningPatient ? "Assigning..." : "Assign Patient"}
               </button>
             </form>
-          </div>
+          </section>
         )}
 
         {loading ? (
           <div className="state-card">Loading patients...</div>
         ) : (
-          <div className="patients-layout">
+          <section className="patients-layout">
             <div className="patient-list-card">
-              <h2>Assigned Patients</h2>
+              <div className="card-head">
+                <h2>Assigned Patients</h2>
+                <p>Stylish list view with more space for multiple patients.</p>
+              </div>
 
               {filteredAssignedPatients.length === 0 ? (
                 <p className="empty-text">No assigned patients found.</p>
@@ -773,12 +884,12 @@ const TherapistPatients = () => {
                   {filteredAssignedPatients.map((patient) => (
                     <div
                       key={patient.id}
-                      className={`patient-list-item ${
-                        selectedPatient?.id === patient.id ? "selected-patient" : ""
+                      className={`patient-row ${
+                        selectedPatient?.id === patient.id ? "selected-patient-row" : ""
                       }`}
                       onClick={() => handleSelectPatient(patient)}
                     >
-                      <div className="patient-list-top">
+                      <div className="patient-row-left">
                         {patient.childImageUrl ? (
                           <img
                             src={patient.childImageUrl}
@@ -789,16 +900,34 @@ const TherapistPatients = () => {
                           <div className="patient-thumb-placeholder">🧒</div>
                         )}
 
-                        <div>
+                        <div className="patient-row-main">
                           <h3>{patient.childName || "Child"}</h3>
                           <p>{patient.childCode || "No Code"}</p>
                         </div>
                       </div>
 
-                      <p><strong>Parent:</strong> {patient.parentName || "N/A"}</p>
-                      <p><strong>Parent ID:</strong> {patient.parentId || "N/A"}</p>
-                      <p><strong>Parent Email:</strong> {patient.parentEmail || "N/A"}</p>
-                      <p><strong>Level:</strong> {patient.assignedLevelName || "Not Assigned"}</p>
+                      <div className="patient-row-info">
+                        <div className="patient-info-chip">
+                          <span className="chip-label">Parent</span>
+                          <span>{patient.parentName || "N/A"}</span>
+                        </div>
+
+                        <div className="patient-info-chip">
+                          <span className="chip-label">Level</span>
+                          <span>{patient.assignedLevelName || "Not Assigned"}</span>
+                        </div>
+
+                        <div className="patient-info-chip">
+                          <span className="chip-label">Device</span>
+                          <span>{patient.deviceAssigned ? "Assigned" : "Not Assigned"}</span>
+                        </div>
+                      </div>
+
+                      <div className="patient-row-status">
+                        <span className="status-pill">
+                          {patient.status || "active"}
+                        </span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -807,11 +936,17 @@ const TherapistPatients = () => {
 
             <div className="patient-details-card">
               {!selectedPatient ? (
-                <p className="empty-text">Click a patient card to view full details.</p>
+                <p className="empty-text">Click a patient row to view full details.</p>
               ) : (
                 <>
                   <div className="details-header">
-                    <h2>Patient Details</h2>
+                    <div className="details-header-left">
+                      <h2>Patient Details</h2>
+                      <p>
+                        Manage assignment, device, therapy plan, and progress for{" "}
+                        {selectedPatient.childName || "this child"}.
+                      </p>
+                    </div>
 
                     <div className="details-actions">
                       <button
@@ -842,11 +977,21 @@ const TherapistPatients = () => {
                         >
                           Assignment
                         </button>
+
+                        <button
+                          type="button"
+                          className={`detail-tab ${
+                            selectedTab === "timeline" ? "active-detail-tab" : ""
+                          }`}
+                          onClick={() => setSelectedTab("timeline")}
+                        >
+                          Timeline
+                        </button>
                       </div>
                     </div>
                   </div>
 
-                  {selectedTab === "overview" ? (
+                  {selectedTab === "overview" && (
                     <div className="details-grid">
                       <div className="detail-box">
                         <h3>Child Details</h3>
@@ -854,6 +999,7 @@ const TherapistPatients = () => {
                         <p><strong>Code:</strong> {selectedPatient.childCode || "N/A"}</p>
                         <p><strong>Age:</strong> {selectedPatient.age || "N/A"}</p>
                         <p><strong>Gender:</strong> {selectedPatient.gender || "N/A"}</p>
+                        <p><strong>Status:</strong> {selectedPatient.status || "active"}</p>
                       </div>
 
                       <div className="detail-box">
@@ -864,23 +1010,28 @@ const TherapistPatients = () => {
                         <p><strong>Contact:</strong> {selectedPatient.parentContact || "N/A"}</p>
                       </div>
 
-                      <div className="detail-box">
-                        <h3>Progress Snapshot</h3>
+                      <div className="detail-box detail-box-wide">
+                        <div className="detail-box-header">
+                          <h3>Progress Access</h3>
+                          <button
+                            type="button"
+                            className="mini-edit-btn"
+                            onClick={() => setSelectedTab("assignment")}
+                          >
+                            View Progress
+                          </button>
+                        </div>
+                        <p>
+                          Open the next section to view therapy plan, recommendations,
+                          level details, and device-related progress management.
+                        </p>
                         <p><strong>Overall Progress:</strong> {reportData?.overallProgress ?? 0}%</p>
-                        <p><strong>Current Level:</strong> {reportData?.currentLevelName || selectedPatient.assignedLevelName || "N/A"}</p>
                         <p><strong>Sessions Completed:</strong> {reportData?.totalSessionsCompleted ?? 0}</p>
-                        <p><strong>Current Mode:</strong> {reportData?.currentMode || "Selected on device"}</p>
-                      </div>
-
-                      <div className="detail-box">
-                        <h3>Assigned Therapist</h3>
-                        <p><strong>Name:</strong> {selectedPatient.therapistName || "N/A"}</p>
-                        <p><strong>ID:</strong> {selectedPatient.therapistId || "N/A"}</p>
-                        <p><strong>Email:</strong> {selectedPatient.therapistEmail || "N/A"}</p>
-                        <p><strong>Contact:</strong> {selectedPatient.therapistContact || "N/A"}</p>
                       </div>
                     </div>
-                  ) : (
+                  )}
+
+                  {selectedTab === "assignment" && (
                     <div className="details-grid">
                       <div className="detail-box">
                         <div className="detail-box-header">
@@ -929,9 +1080,9 @@ const TherapistPatients = () => {
                         </div>
                         <p><strong>Max Sessions / Day:</strong> {therapyPlan?.maxSessionsPerDay ?? "N/A"}</p>
                         <p><strong>Session Duration:</strong> {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins</p>
-                        <p><strong>Minimum Gap Between Sessions:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
-                        <p><strong>Both Modes Allowed:</strong> Yes</p>
-                        <p><strong>Mode Selection:</strong> On device open</p>
+                        <p><strong>Minimum Gap:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
+                        <p><strong>Therapy Time:</strong> {therapyPlan?.therapyStartTime || "N/A"} - {therapyPlan?.therapyEndTime || "N/A"}</p>
+                        <p><strong>Fallback Mode:</strong> {therapyPlan?.fallbackMode || "companion"}</p>
                       </div>
 
                       <div className="detail-box">
@@ -942,16 +1093,39 @@ const TherapistPatients = () => {
                       </div>
                     </div>
                   )}
+
+                  {selectedTab === "timeline" && (
+                    <div className="timeline-card">
+                      <h3>Recent Timeline</h3>
+
+                      {patientTimeline.length === 0 ? (
+                        <p className="empty-text">No updates found yet.</p>
+                      ) : (
+                        <div className="timeline-list">
+                          {patientTimeline.map((item) => (
+                            <div className="timeline-item" key={item.id}>
+                              <div className="timeline-dot"></div>
+                              <div className="timeline-content">
+                                <h4>{item.title || "Update"}</h4>
+                                <p>{item.description || "No description available."}</p>
+                                <span>{formatDate(item.createdAt)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>
-          </div>
+          </section>
         )}
 
         {showDeviceDialog && (
-          <div className="device-modal-overlay" onClick={() => setShowDeviceDialog(false)}>
-            <div className="device-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="device-modal-header">
+          <div className="modal-overlay" onClick={() => setShowDeviceDialog(false)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
                 <h2>Assign Device</h2>
                 <button
                   type="button"
@@ -962,8 +1136,9 @@ const TherapistPatients = () => {
                 </button>
               </div>
 
-              <p className="device-modal-subtext">
-                Device ID will be auto-generated. Both Therapy and Companion modes will be available, and the child can choose after opening the device.
+              <p className="modal-subtext">
+                Device ID will be auto-generated. Therapy and companion modes will
+                be available.
               </p>
 
               <form className="assign-form" onSubmit={handleAssignDevice}>
@@ -997,11 +1172,34 @@ const TherapistPatients = () => {
                   <input
                     type="number"
                     name="minimumGapBetweenSessionsMinutes"
-                    placeholder="Minimum Gap Between Consecutive Sessions (mins)"
+                    placeholder="Minimum Gap Between Sessions"
                     value={deviceForm.minimumGapBetweenSessionsMinutes}
                     onChange={handleDeviceFormChange}
                     min="0"
                   />
+
+                  <input
+                    type="time"
+                    name="therapyStartTime"
+                    value={deviceForm.therapyStartTime}
+                    onChange={handleDeviceFormChange}
+                  />
+
+                  <input
+                    type="time"
+                    name="therapyEndTime"
+                    value={deviceForm.therapyEndTime}
+                    onChange={handleDeviceFormChange}
+                  />
+
+                  <select
+                    name="fallbackMode"
+                    value={deviceForm.fallbackMode}
+                    onChange={handleDeviceFormChange}
+                  >
+                    <option value="companion">Fallback: Companion Mode</option>
+                    <option value="therapy">Fallback: Therapy Mode</option>
+                  </select>
 
                   <div className="readonly-info-box">
                     Device ID: Auto-generated on assign
@@ -1043,9 +1241,9 @@ const TherapistPatients = () => {
         )}
 
         {showLevelEditDialog && (
-          <div className="device-modal-overlay" onClick={() => setShowLevelEditDialog(false)}>
-            <div className="device-modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="device-modal-header">
+          <div className="modal-overlay" onClick={() => setShowLevelEditDialog(false)}>
+            <div className="modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
                 <h2>Edit Level Assignment</h2>
                 <button
                   type="button"
@@ -1057,10 +1255,7 @@ const TherapistPatients = () => {
               </div>
 
               <form className="assign-form" onSubmit={handleSaveLevelEdit}>
-                <select
-                  value={levelEditForm.levelId}
-                  onChange={handleLevelEditChange}
-                >
+                <select value={levelEditForm.levelId} onChange={handleLevelEditChange}>
                   <option value="">Select Level</option>
                   {levels.map((level) => (
                     <option key={level.id} value={level.id}>
@@ -1092,9 +1287,9 @@ const TherapistPatients = () => {
         )}
 
         {showDeviceEditDialog && (
-          <div className="device-modal-overlay" onClick={() => setShowDeviceEditDialog(false)}>
-            <div className="device-modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="device-modal-header">
+          <div className="modal-overlay" onClick={() => setShowDeviceEditDialog(false)}>
+            <div className="modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
                 <h2>Edit Device Info</h2>
                 <button
                   type="button"
@@ -1154,9 +1349,9 @@ const TherapistPatients = () => {
         )}
 
         {showPlanEditDialog && (
-          <div className="device-modal-overlay" onClick={() => setShowPlanEditDialog(false)}>
-            <div className="device-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="device-modal-header">
+          <div className="modal-overlay" onClick={() => setShowPlanEditDialog(false)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
                 <h2>Edit Therapy Plan</h2>
                 <button
                   type="button"
@@ -1190,11 +1385,34 @@ const TherapistPatients = () => {
                   <input
                     type="number"
                     name="minimumGapBetweenSessionsMinutes"
-                    placeholder="Minimum Gap Between Consecutive Sessions (mins)"
+                    placeholder="Minimum Gap Between Sessions"
                     value={planEditForm.minimumGapBetweenSessionsMinutes}
                     onChange={handlePlanEditChange}
                     min="0"
                   />
+
+                  <input
+                    type="time"
+                    name="therapyStartTime"
+                    value={planEditForm.therapyStartTime}
+                    onChange={handlePlanEditChange}
+                  />
+
+                  <input
+                    type="time"
+                    name="therapyEndTime"
+                    value={planEditForm.therapyEndTime}
+                    onChange={handlePlanEditChange}
+                  />
+
+                  <select
+                    name="fallbackMode"
+                    value={planEditForm.fallbackMode}
+                    onChange={handlePlanEditChange}
+                  >
+                    <option value="companion">Fallback: Companion Mode</option>
+                    <option value="therapy">Fallback: Therapy Mode</option>
+                  </select>
 
                   <div className="readonly-info-box">
                     Modes Allowed: Therapy + Companion
