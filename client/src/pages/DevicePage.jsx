@@ -521,7 +521,7 @@ const DevicePage = () => {
     });
   };
 
-  const triggerPractice = async (itemData, currentAttempt) => {
+  const triggerPractice = async (itemData, currentAttempt, itemIndex) => {
     try {
       if (!itemData?.text) throw new Error("Current item text is missing.");
 
@@ -560,7 +560,7 @@ const DevicePage = () => {
 
       const taskKey = data?.task?.taskKey || "";
       setStage("Prompt is playing...");
-      startPolling(itemData, currentAttempt, activeSessionId, taskKey);
+      startPolling(itemData, currentAttempt, activeSessionId, taskKey, itemIndex);
     } catch (error) {
       console.error("Trigger error:", error);
       setStage("Trigger failed");
@@ -571,7 +571,13 @@ const DevicePage = () => {
     }
   };
 
-  const startPolling = (itemData, currentAttempt, activeSessionId, taskKey = "") => {
+  const startPolling = (
+    itemData,
+    currentAttempt,
+    activeSessionId,
+    taskKey = "",
+    itemIndex = 0
+  ) => {
     stopPolling();
     pollStartedAtRef.current = Date.now();
 
@@ -620,7 +626,7 @@ const DevicePage = () => {
         stopPolling();
         setIsListening(false);
         setToyPromptActive(false);
-        await handlePracticeResult(data, itemData, currentAttempt, activeSessionId);
+        await handlePracticeResult(data, itemData, currentAttempt, activeSessionId, itemIndex);
       } catch (error) {
         console.error("Polling error:", error);
         stopPolling();
@@ -633,7 +639,13 @@ const DevicePage = () => {
     }, POLL_INTERVAL_MS);
   };
 
-  const handlePracticeResult = async (resultData, itemData, currentAttempt, activeSessionId) => {
+  const handlePracticeResult = async (
+    resultData,
+    itemData,
+    currentAttempt,
+    activeSessionId,
+    itemIndex
+  ) => {
     setLatestResult(resultData);
     setStage("Result received");
 
@@ -678,7 +690,7 @@ const DevicePage = () => {
       setStage(`Try again ${nextAttempt}/${MAX_ATTEMPTS}`);
 
       setTimeout(() => {
-        triggerPractice(itemData, nextAttempt);
+        triggerPractice(itemData, nextAttempt, itemIndex);
       }, 3200);
 
       return;
@@ -686,18 +698,21 @@ const DevicePage = () => {
 
     setAttempt(1);
 
-    if (currentIndex + 1 < items.length) {
+    const nextIndex = itemIndex + 1;
+
+    if (nextIndex < items.length) {
       setStage("Moving to next item...");
+
       setTimeout(() => {
         setLatestResult(null);
         setPageError("");
-        setCurrentIndex((prev) => prev + 1);
+        setCurrentIndex(nextIndex);
         setIsBusy(false);
 
-        const nextItem = items[currentIndex + 1];
+        const nextItem = items[nextIndex];
         if (nextItem) {
           setTimeout(() => {
-            triggerPractice(nextItem, 1);
+            triggerPractice(nextItem, 1, nextIndex);
           }, 1400);
         }
       }, 1800);
@@ -715,6 +730,7 @@ const DevicePage = () => {
     setToyPromptActive(false);
     setStage("Session completed");
     stopTimer();
+    stopPolling();
 
     await updateSessionSummary(activeSessionId, finalProgress, true);
     await updateDailyUsage(child, finalProgress);
@@ -740,6 +756,12 @@ const DevicePage = () => {
       });
     } catch (error) {
       console.error("Summary save error:", error);
+    }
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset after finish error:", error);
     }
 
     setTimeout(async () => {
@@ -796,7 +818,7 @@ const DevicePage = () => {
     const firstItem = items[0];
     if (firstItem) {
       setTimeout(() => {
-        triggerPractice(firstItem, 1);
+        triggerPractice(firstItem, 1, 0);
       }, 600);
     }
   };
@@ -829,7 +851,7 @@ const DevicePage = () => {
 
     if (currentItem) {
       setTimeout(() => {
-        triggerPractice(currentItem, attempt || 1);
+        triggerPractice(currentItem, attempt || 1, currentIndex);
       }, 800);
     }
   };
@@ -848,6 +870,13 @@ const DevicePage = () => {
       setStage("Session ended");
       setSelectedMode("companion");
       setCompanionActive(false);
+
+      try {
+        await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+      } catch (error) {
+        console.error("Practice reset after manual end error:", error);
+      }
+
       return;
     }
 

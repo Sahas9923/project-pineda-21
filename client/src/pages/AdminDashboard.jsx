@@ -1,893 +1,1242 @@
-import React, { useEffect, useMemo, useState } from "react";
-import "../styles/AdminDashboard.css";
-import { db, storage } from "../firebase/config";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
+import "../styles/DevicePage.css";
+
+import { auth, db } from "../firebase/config";
 import {
   addDoc,
   collection,
-  deleteDoc,
   doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from "firebase/firestore";
-import {
-  ref,
-  uploadBytes,
-  getDownloadURL,
-  deleteObject,
-  listAll,
-} from "firebase/storage";
 
-const AdminDashboard = () => {
-  const [levels, setLevels] = useState([]);
-  const [selectedLevel, setSelectedLevel] = useState("");
+const SERVER = "https://project-pineda-21-backend.onrender.com";
+const MAX_ATTEMPTS = 3;
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 35000;
 
-  const [levelTitle, setLevelTitle] = useState("");
-  const [levelDescription, setLevelDescription] = useState("");
+const DevicePage = () => {
+  const { state } = useLocation();
 
-  const [editingLevelId, setEditingLevelId] = useState(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState("");
 
-  const [itemText, setItemText] = useState("");
-  const [itemType, setItemType] = useState("sound");
-  const [imageFile, setImageFile] = useState(null);
-  const [mp3Track, setMp3Track] = useState("");
-  const [promptDelayMs, setPromptDelayMs] = useState("2500");
-
-  const [editingItemId, setEditingItemId] = useState(null);
-  const [editItemText, setEditItemText] = useState("");
-  const [editItemType, setEditItemType] = useState("sound");
-  const [editMp3Track, setEditMp3Track] = useState("");
-  const [editPromptDelayMs, setEditPromptDelayMs] = useState("2500");
-  const [editImageFile, setEditImageFile] = useState(null);
-  const [updatingItem, setUpdatingItem] = useState(false);
-
+  const [child, setChild] = useState(null);
+  const [parent, setParent] = useState(null);
+  const [therapist, setTherapist] = useState(null);
+  const [deviceInfo, setDeviceInfo] = useState(null);
+  const [therapyPlanData, setTherapyPlanData] = useState(null);
+  const [levelInfo, setLevelInfo] = useState(null);
   const [items, setItems] = useState([]);
-  const [message, setMessage] = useState("");
-  const [loadingLevel, setLoadingLevel] = useState(false);
-  const [loadingItem, setLoadingItem] = useState(false);
-  const [updatingLevel, setUpdatingLevel] = useState(false);
-  const [deletingLevel, setDeletingLevel] = useState(false);
+
+  const [sessionId, setSessionId] = useState("");
+  const [sessionStarted, setSessionStarted] = useState(false);
+  const [sessionCompleted, setSessionCompleted] = useState(false);
+  const [sessionPaused, setSessionPaused] = useState(false);
+  const [sessionBlocked, setSessionBlocked] = useState(false);
+
+  const [selectedMode, setSelectedMode] = useState("companion");
+  const [companionActive, setCompanionActive] = useState(false);
+
+  const [therapyModeAllowed, setTherapyModeAllowed] = useState(true);
+  const [therapyRestrictionMessage, setTherapyRestrictionMessage] = useState("");
+
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [attempt, setAttempt] = useState(1);
+  const [stage, setStage] = useState("Ready");
+  const [latestResult, setLatestResult] = useState(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [toyPromptActive, setToyPromptActive] = useState(false);
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  const [progress, setProgress] = useState({
+    attemptedItems: 0,
+    exact: 0,
+    close: 0,
+    partial: 0,
+    incorrect: 0,
+    overallScore: 0,
+  });
+
+  const pollRef = useRef(null);
+  const pollStartedAtRef = useRef(null);
+  const timerRef = useRef(null);
+  const transitionRef = useRef(false);
+  const finishedRef = useRef(false);
+
+  const currentItem = useMemo(() => items[currentIndex] || null, [items, currentIndex]);
+
+  const completionPercent =
+    items.length > 0 ? Math.round((progress.attemptedItems / items.length) * 100) : 0;
+
+  const friendlyFeedback = useMemo(() => {
+    if (selectedMode === "companion") {
+      if (pageError) return pageError;
+      return companionActive
+        ? "Companion mode is active and waiting for a keyword."
+        : "Preparing companion mode.";
+    }
+
+    if (!latestResult) {
+      if (sessionPaused) return "Therapy session paused.";
+      if (sessionCompleted) return "Therapy session completed.";
+      return "Therapy session is running.";
+    }
+
+    if (latestResult.matchStatus === "exact") return "Excellent work.";
+    if (latestResult.matchStatus === "close") return "Very close.";
+    if (latestResult.matchStatus === "partial") return "Good try.";
+    return "Try once more.";
+  }, [selectedMode, companionActive, pageError, sessionPaused, sessionCompleted, latestResult]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  };
+
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    pollStartedAtRef.current = null;
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const startTimer = () => {
+    stopTimer();
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+  };
+
+  const getTodayKey = () => {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
+  const isWithinTherapyTime = (startTime, endTime) => {
+    if (!startTime || !endTime) return true;
+
+    try {
+      const now = new Date();
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+      const [startH, startM] = String(startTime).split(":").map(Number);
+      const [endH, endM] = String(endTime).split(":").map(Number);
+
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+
+      return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    } catch {
+      return true;
+    }
+  };
+
+  const getTodaySessionCount = async (childData) => {
+    if (!childData?.id) return 0;
+
+    const todayKey = getTodayKey();
+
+    try {
+      const dailyUsageRef = doc(db, "children", childData.id, "dailyUsage", todayKey);
+      const dailyUsageSnap = await getDoc(dailyUsageRef);
+
+      if (dailyUsageSnap.exists()) {
+        return Number(dailyUsageSnap.data().sessionCount || 0);
+      }
+    } catch {
+      //
+    }
+
+    if (childData.lastSessionDate === todayKey) {
+      return Number(childData.todaySessionCount || 0);
+    }
+
+    return 0;
+  };
+
+  const sortItems = (itemList) => {
+    return [...itemList].sort((a, b) => {
+      const aTrack = Number(a?.mp3Track || 0);
+      const bTrack = Number(b?.mp3Track || 0);
+
+      if (aTrack > 0 && bTrack > 0 && aTrack !== bTrack) {
+        return aTrack - bTrack;
+      }
+
+      const aCreated = a?.createdAt?.seconds || 0;
+      const bCreated = b?.createdAt?.seconds || 0;
+      return aCreated - bCreated;
+    });
+  };
+
+  const evaluateTherapyAvailability = async (childData, planData) => {
+    if (!childData || !planData) {
+      return {
+        allowed: false,
+        reason: "Therapy mode is not ready yet. Companion mode is available.",
+      };
+    }
+
+    const maxSessionsPerDay = Number(planData.maxSessionsPerDay || 0);
+    const lockTherapyAfterLimit = !!planData.lockTherapyAfterLimit;
+
+    if (maxSessionsPerDay < 1) {
+      return {
+        allowed: false,
+        reason: "Therapy mode is not configured yet. Companion mode is available.",
+      };
+    }
+
+    const inAllowedTime = isWithinTherapyTime(
+      planData.therapyStartTime,
+      planData.therapyEndTime
+    );
+
+    if (!inAllowedTime) {
+      return {
+        allowed: false,
+        reason: `Therapy time is available only during ${
+          planData.therapyStartTime || "--"
+        } - ${planData.therapyEndTime || "--"}. Companion mode is available now.`,
+      };
+    }
+
+    const todaySessionCount = await getTodaySessionCount(childData);
+
+    if (lockTherapyAfterLimit && todaySessionCount >= maxSessionsPerDay) {
+      return {
+        allowed: false,
+        reason: `Today's therapy limit (${maxSessionsPerDay}) has been reached. Companion mode is still available.`,
+      };
+    }
+
+    return { allowed: true, reason: "" };
+  };
+
+  const loadPageData = async () => {
+    try {
+      setLoading(true);
+      setPageError("");
+
+      if (!state?.childId) {
+        setPageError("Missing child information.");
+        setLoading(false);
+        return;
+      }
+
+      const childSnap = await getDoc(doc(db, "children", state.childId));
+      if (!childSnap.exists()) {
+        setPageError("Child record not found.");
+        setLoading(false);
+        return;
+      }
+
+      const childData = { id: childSnap.id, ...childSnap.data() };
+      setChild(childData);
+
+      const parentUid = childData.parentUid || auth.currentUser?.uid || "";
+      if (parentUid) {
+        const parentSnap = await getDoc(doc(db, "parents", parentUid));
+        if (parentSnap.exists()) {
+          setParent({ id: parentSnap.id, ...parentSnap.data() });
+        }
+      }
+
+      const therapistUid = state?.therapistUid || childData.therapistUid || "";
+      if (therapistUid) {
+        const therapistSnap = await getDoc(doc(db, "therapists", therapistUid));
+        if (therapistSnap.exists()) {
+          setTherapist({ id: therapistSnap.id, ...therapistSnap.data() });
+        }
+      }
+
+      const levelId = state?.assignedLevelId || childData.assignedLevelId || "";
+      if (!levelId) {
+        setPageError("No assigned level found.");
+        setLoading(false);
+        return;
+      }
+
+      const levelSnap = await getDoc(doc(db, "levels", levelId));
+      if (levelSnap.exists()) {
+        setLevelInfo({ id: levelSnap.id, ...levelSnap.data() });
+      }
+
+      const itemsRef = collection(db, "levels", levelId, "items");
+      let itemDocs = [];
+
+      try {
+        const orderedItems = query(itemsRef, orderBy("createdAt", "asc"));
+        const itemSnap = await getDocs(orderedItems);
+        itemDocs = itemSnap.docs;
+      } catch {
+        const itemSnap = await getDocs(itemsRef);
+        itemDocs = itemSnap.docs;
+      }
+
+      const itemList = itemDocs.map((d) => ({ id: d.id, ...d.data() }));
+      setItems(sortItems(itemList));
+
+      let loadedPlan = null;
+      if (state?.therapyPlan) {
+        loadedPlan = state.therapyPlan;
+        setTherapyPlanData(state.therapyPlan);
+      } else {
+        const planSnap = await getDoc(doc(db, "therapyPlans", state.childId));
+        if (planSnap.exists()) {
+          loadedPlan = { id: planSnap.id, ...planSnap.data() };
+          setTherapyPlanData(loadedPlan);
+        }
+      }
+
+      const deviceDocId =
+        state?.deviceId || childData.deviceId || childData.deviceCode || "";
+
+      if (deviceDocId) {
+        const deviceSnap = await getDoc(doc(db, "devices", deviceDocId));
+        if (deviceSnap.exists()) {
+          setDeviceInfo({ id: deviceSnap.id, ...deviceSnap.data() });
+        } else {
+          setDeviceInfo({
+            id: deviceDocId,
+            deviceId: childData.deviceId || state?.deviceId || "",
+            deviceCode: childData.deviceCode || state?.deviceCode || "",
+            deviceName: childData.deviceName || state?.deviceName || "Assigned Device",
+            deviceStatus: childData.deviceStatus || "Assigned",
+          });
+        }
+      }
+
+      const therapyAccess = await evaluateTherapyAvailability(childData, loadedPlan);
+      setTherapyModeAllowed(therapyAccess.allowed);
+      setTherapyRestrictionMessage(therapyAccess.reason || "");
+
+      setSelectedMode("companion");
+      setLoading(false);
+    } catch (error) {
+      console.error("Load page error:", error);
+      setPageError(error.message || "Failed to load device page.");
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    fetchLevels();
+    loadPageData();
+    return () => {
+      stopPolling();
+      stopTimer();
+      transitionRef.current = false;
+      finishedRef.current = false;
+    };
   }, []);
 
+  const activateCompanionMode = async () => {
+    try {
+      if (sessionStarted || sessionCompleted || transitionRef.current) return;
+
+      setSelectedMode("companion");
+      setPageError("");
+      setStage("Activating companion mode...");
+
+      const response = await fetch(`${SERVER}/companion-start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          childId: child?.id || "",
+          childName: child?.childName || "",
+          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
+          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
+          startTrack: 23,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to start companion mode");
+
+      setCompanionActive(true);
+      setStage(data.message || "Companion mode active");
+      setLatestResult(null);
+    } catch (error) {
+      console.error("Companion mode error:", error);
+      setCompanionActive(false);
+      setPageError(error.message || "Failed to start companion mode.");
+      setStage("Companion mode failed");
+    }
+  };
+
+  const stopCompanionMode = async () => {
+    try {
+      await fetch(`${SERVER}/companion-stop`, { method: "POST" });
+    } catch (error) {
+      console.error("Companion stop error:", error);
+    } finally {
+      setCompanionActive(false);
+    }
+  };
+
   useEffect(() => {
-    if (selectedLevel) {
-      fetchItems(selectedLevel);
-    } else {
-      setItems([]);
+    if (!loading && selectedMode === "companion" && !sessionStarted && !companionActive) {
+      activateCompanionMode();
     }
-  }, [selectedLevel]);
+  }, [loading, selectedMode, sessionStarted, companionActive]);
 
-  const stats = useMemo(() => {
-    const sounds = items.filter((item) => item.type === "sound").length;
-    const words = items.filter((item) => item.type === "word").length;
-    const sentences = items.filter((item) => item.type === "sentence").length;
+  useEffect(() => {
+    if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
+    if (selectedMode !== "therapy") return;
 
-    return {
-      totalLevels: levels.length,
+    const maxSeconds = Number(therapyPlanData.sessionDurationMinutes) * 60;
+    if (maxSeconds > 0 && elapsedSeconds >= maxSeconds) {
+      stopPolling();
+      stopTimer();
+      setSessionCompleted(true);
+      setSessionStarted(false);
+      setSessionPaused(false);
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+      setStage("Session duration limit reached");
+      setPageError("This therapy session reached the allowed time limit.");
+    }
+  }, [elapsedSeconds, sessionStarted, sessionCompleted, therapyPlanData, selectedMode]);
+
+  const createSession = async () => {
+    if (!child) return "";
+    if (sessionId) return sessionId;
+
+    const sessionRef = await addDoc(collection(db, "sessions"), {
+      childId: child.id,
+      childName: child.childName || state?.childName || "",
+      childCode: child.childCode || state?.childCode || "",
+      parentUid: child.parentUid || auth.currentUser?.uid || "",
+      parentName: parent?.name || child.parentName || "",
+      parentEmail: parent?.email || child.parentEmail || "",
+      parentContact: parent?.contact || child.parentContact || "",
+      therapistUid: therapist?.id || state?.therapistUid || child.therapistUid || "",
+      therapistName: therapist?.name || child.therapistName || "",
+      therapistContact: therapist?.contact || child.therapistContact || "",
+      deviceId: state?.deviceId || child.deviceId || child.deviceCode || "",
+      deviceCode: state?.deviceCode || child.deviceCode || child.deviceId || "",
+      deviceName:
+        state?.deviceName ||
+        child.deviceName ||
+        deviceInfo?.deviceName ||
+        "Assigned Device",
+      levelId: levelInfo?.id || state?.assignedLevelId || child.assignedLevelId || "",
+      levelTitle: levelInfo?.title || child.assignedLevelName || "",
+      therapyPlan: therapyPlanData || null,
+      sessionMode: "therapy",
+      sessionDate: getTodayKey(),
+      startedAt: serverTimestamp(),
+      endedAt: null,
+      status: "active",
       totalItems: items.length,
-      sounds,
-      words,
-      sentences,
-    };
-  }, [levels, items]);
+      attemptedItems: 0,
+      exactCount: 0,
+      closeCount: 0,
+      partialCount: 0,
+      incorrectCount: 0,
+      overallScore: 0,
+    });
 
-  const showMessage = (text) => {
-    setMessage(text);
-    setTimeout(() => setMessage(""), 3000);
+    setSessionId(sessionRef.id);
+    return sessionRef.id;
   };
 
-  const fetchLevels = async () => {
-    try {
-      const q = query(collection(db, "levels"), orderBy("createdAt", "desc"));
-      const snapshot = await getDocs(q);
+  const saveAttempt = async (resultData, itemData, currentAttempt, activeSessionId) => {
+    if (!activeSessionId || !itemData) return;
 
-      const levelList = snapshot.docs.map((levelDoc) => ({
-        id: levelDoc.id,
-        ...levelDoc.data(),
-      }));
-
-      setLevels(levelList);
-
-      if (levelList.length > 0) {
-        const stillExists = levelList.some((lvl) => lvl.id === selectedLevel);
-        if (!selectedLevel || !stillExists) {
-          setSelectedLevel(levelList[0].id);
-        }
-      } else {
-        setSelectedLevel("");
-      }
-    } catch (error) {
-      console.error("Error fetching levels:", error);
-      showMessage("❌ Failed to load levels.");
-    }
+    await addDoc(collection(db, "sessions", activeSessionId, "attempts"), {
+      itemId: itemData.id,
+      itemText: itemData.text || "",
+      itemType: itemData.type || "word",
+      itemImage: itemData.imageUrl || "",
+      mp3Track: Number(itemData.mp3Track || 0),
+      attemptNumber: currentAttempt,
+      recognizedText: resultData.recognizedText || "",
+      targetText: resultData.targetText || "",
+      score: resultData.score || 0,
+      matchStatus: resultData.matchStatus || "incorrect",
+      feedback: resultData.feedback || "",
+      feedbackTrack: Number(resultData.feedbackTrack || 0),
+      movedToNext: !!resultData.moveNext,
+      shouldRetry: !!resultData.shouldRetry,
+      createdAt: serverTimestamp(),
+      time: resultData.time || new Date().toISOString(),
+    });
   };
 
-  const fetchItems = async (levelId) => {
-    try {
-      const q = query(
-        collection(db, "levels", levelId, "items"),
-        orderBy("createdAt", "desc")
-      );
+  const updateDailyUsage = async (childData, finalProgress) => {
+    if (!childData?.id) return;
 
-      const snapshot = await getDocs(q);
+    const todayKey = getTodayKey();
+    const dailyUsageRef = doc(db, "children", childData.id, "dailyUsage", todayKey);
+    const todayCount = await getTodaySessionCount(childData);
 
-      const itemList = snapshot.docs.map((itemDoc) => ({
-        id: itemDoc.id,
-        ...itemDoc.data(),
-      }));
-
-      setItems(itemList);
-    } catch (error) {
-      console.error("Error fetching items:", error);
-      showMessage("❌ Failed to load items.");
-    }
-  };
-
-  const handleAddLevel = async (e) => {
-    e.preventDefault();
-
-    if (!levelTitle.trim() || !levelDescription.trim()) {
-      showMessage("❌ Please fill level title and description.");
-      return;
-    }
-
-    try {
-      setLoadingLevel(true);
-
-      const docRef = await addDoc(collection(db, "levels"), {
-        title: levelTitle.trim(),
-        description: levelDescription.trim(),
-        createdAt: serverTimestamp(),
-      });
-
-      setLevelTitle("");
-      setLevelDescription("");
-
-      await fetchLevels();
-      setSelectedLevel(docRef.id);
-
-      showMessage("✅ Level added successfully.");
-    } catch (error) {
-      console.error("Error adding level:", error);
-      showMessage("❌ Failed to add level.");
-    } finally {
-      setLoadingLevel(false);
-    }
-  };
-
-  const handleEditLevel = (level) => {
-    setEditingLevelId(level.id);
-    setEditTitle(level.title || "");
-    setEditDescription(level.description || "");
-  };
-
-  const handleUpdateLevel = async (e) => {
-    e.preventDefault();
-
-    if (!editTitle.trim() || !editDescription.trim()) {
-      showMessage("❌ Please fill all edit fields.");
-      return;
-    }
-
-    try {
-      setUpdatingLevel(true);
-
-      await updateDoc(doc(db, "levels", editingLevelId), {
-        title: editTitle.trim(),
-        description: editDescription.trim(),
-      });
-
-      setEditingLevelId(null);
-      setEditTitle("");
-      setEditDescription("");
-
-      await fetchLevels();
-      showMessage("✅ Level updated successfully.");
-    } catch (error) {
-      console.error("Error updating level:", error);
-      showMessage("❌ Failed to update level.");
-    } finally {
-      setUpdatingLevel(false);
-    }
-  };
-
-  const cancelEditLevel = () => {
-    setEditingLevelId(null);
-    setEditTitle("");
-    setEditDescription("");
-  };
-
-  const handleAddItem = async (e) => {
-    e.preventDefault();
-
-    if (!selectedLevel) {
-      showMessage("❌ Please select a level.");
-      return;
-    }
-
-    if (!itemText.trim()) {
-      showMessage("❌ Please enter a sound, word, or sentence.");
-      return;
-    }
-
-    if (!imageFile) {
-      showMessage("❌ Please choose an image.");
-      return;
-    }
-
-    const parsedTrack = Number(mp3Track);
-    if (
-      !mp3Track ||
-      Number.isNaN(parsedTrack) ||
-      parsedTrack < 1 ||
-      !Number.isInteger(parsedTrack)
-    ) {
-      showMessage("❌ Please enter a valid MP3 track number.");
-      return;
-    }
-
-    const parsedDelay = Number(promptDelayMs || 2500);
-    if (Number.isNaN(parsedDelay) || parsedDelay < 0) {
-      showMessage("❌ Please enter a valid prompt delay.");
-      return;
-    }
-
-    try {
-      setLoadingItem(true);
-
-      const fileName = `${Date.now()}-${imageFile.name}`;
-      const storageRef = ref(storage, `speech-items/${selectedLevel}/${fileName}`);
-
-      await uploadBytes(storageRef, imageFile);
-      const imageUrl = await getDownloadURL(storageRef);
-
-      await addDoc(collection(db, "levels", selectedLevel, "items"), {
-        text: itemText.trim(),
-        type: itemType,
-        imageUrl,
-        storagePath: storageRef.fullPath,
-        mp3Track: parsedTrack,
-        promptDelayMs: parsedDelay,
-        createdAt: serverTimestamp(),
-      });
-
-      setItemText("");
-      setItemType("sound");
-      setImageFile(null);
-      setMp3Track("");
-      setPromptDelayMs("2500");
-
-      const fileInput = document.getElementById("imageUpload");
-      if (fileInput) fileInput.value = "";
-
-      await fetchItems(selectedLevel);
-      showMessage("✅ Item added successfully.");
-    } catch (error) {
-      console.error("Error adding item:", error);
-      showMessage("❌ Failed to add item.");
-    } finally {
-      setLoadingItem(false);
-    }
-  };
-
-  const handleEditItem = (item) => {
-    setEditingItemId(item.id);
-    setEditItemText(item.text || "");
-    setEditItemType(item.type || "sound");
-    setEditMp3Track(String(item.mp3Track ?? ""));
-    setEditPromptDelayMs(String(item.promptDelayMs ?? 2500));
-    setEditImageFile(null);
-  };
-
-  const cancelEditItem = () => {
-    setEditingItemId(null);
-    setEditItemText("");
-    setEditItemType("sound");
-    setEditMp3Track("");
-    setEditPromptDelayMs("2500");
-    setEditImageFile(null);
-  };
-
-  const handleUpdateItem = async (e, item) => {
-    e.preventDefault();
-
-    if (!selectedLevel || !item?.id) {
-      showMessage("❌ Item update failed.");
-      return;
-    }
-
-    if (!editItemText.trim()) {
-      showMessage("❌ Please enter item text.");
-      return;
-    }
-
-    const parsedTrack = Number(editMp3Track);
-    if (
-      !editMp3Track ||
-      Number.isNaN(parsedTrack) ||
-      parsedTrack < 1 ||
-      !Number.isInteger(parsedTrack)
-    ) {
-      showMessage("❌ Please enter a valid MP3 track number.");
-      return;
-    }
-
-    const parsedDelay = Number(editPromptDelayMs || 2500);
-    if (Number.isNaN(parsedDelay) || parsedDelay < 0) {
-      showMessage("❌ Please enter a valid prompt delay.");
-      return;
-    }
-
-    try {
-      setUpdatingItem(true);
-
-      const updateData = {
-        text: editItemText.trim(),
-        type: editItemType,
-        mp3Track: parsedTrack,
-        promptDelayMs: parsedDelay,
-      };
-
-      if (editImageFile) {
-        const newFileName = `${Date.now()}-${editImageFile.name}`;
-        const newStorageRef = ref(
-          storage,
-          `speech-items/${selectedLevel}/${newFileName}`
-        );
-
-        await uploadBytes(newStorageRef, editImageFile);
-        const newImageUrl = await getDownloadURL(newStorageRef);
-
-        updateData.imageUrl = newImageUrl;
-        updateData.storagePath = newStorageRef.fullPath;
-
-        if (item.storagePath) {
-          try {
-            const oldImageRef = ref(storage, item.storagePath);
-            await deleteObject(oldImageRef);
-          } catch (deleteError) {
-            console.warn("Old image delete failed:", deleteError);
-          }
-        }
-      }
-
-      await updateDoc(
-        doc(db, "levels", selectedLevel, "items", item.id),
-        updateData
-      );
-
-      cancelEditItem();
-      await fetchItems(selectedLevel);
-      showMessage("✅ Item updated successfully.");
-    } catch (error) {
-      console.error("Error updating item:", error);
-      showMessage("❌ Failed to update item.");
-    } finally {
-      setUpdatingItem(false);
-    }
-  };
-
-  const handleDeleteItem = async (itemId, storagePath) => {
-    const confirmed = window.confirm("Are you sure you want to delete this item?");
-    if (!confirmed) return;
-
-    try {
-      await deleteDoc(doc(db, "levels", selectedLevel, "items", itemId));
-
-      if (storagePath) {
-        const imageRef = ref(storage, storagePath);
-        await deleteObject(imageRef);
-      }
-
-      await fetchItems(selectedLevel);
-      showMessage("✅ Item deleted successfully.");
-    } catch (error) {
-      console.error("Error deleting item:", error);
-      showMessage("❌ Failed to delete item.");
-    }
-  };
-
-  const handleDeleteLevel = async (levelId) => {
-    const confirmed = window.confirm(
-      "Are you sure you want to delete this level and all its items?"
+    await setDoc(
+      dailyUsageRef,
+      {
+        childId: childData.id,
+        date: todayKey,
+        sessionCount: todayCount + 1,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
     );
-    if (!confirmed) return;
 
+    await updateDoc(doc(db, "children", childData.id), {
+      lastSessionDate: todayKey,
+      todaySessionCount: todayCount + 1,
+      latestOverallScore: finalProgress.overallScore,
+      latestSessionCompletedAt: serverTimestamp(),
+    });
+  };
+
+  const updateSessionSummary = async (activeSessionId, updatedProgress, completed = false) => {
+    if (!activeSessionId) return;
+
+    await updateDoc(doc(db, "sessions", activeSessionId), {
+      attemptedItems: updatedProgress.attemptedItems,
+      exactCount: updatedProgress.exact,
+      closeCount: updatedProgress.close,
+      partialCount: updatedProgress.partial,
+      incorrectCount: updatedProgress.incorrect,
+      overallScore: updatedProgress.overallScore,
+      status: completed ? "completed" : "active",
+      endedAt: completed ? serverTimestamp() : null,
+    });
+  };
+
+  const triggerPractice = async (itemData, currentAttempt, itemIndex) => {
     try {
-      setDeletingLevel(true);
+      if (finishedRef.current || transitionRef.current) return;
+      if (!itemData?.text) throw new Error("Current item text is missing.");
 
-      const folderRef = ref(storage, `speech-items/${levelId}`);
-      try {
-        const folderItems = await listAll(folderRef);
-        for (const fileRef of folderItems.items) {
-          await deleteObject(fileRef);
-        }
-      } catch (storageError) {
-        console.warn("Storage folder may be empty or missing:", storageError);
+      const parsedTrack = Number(itemData.mp3Track || 0);
+      if (!parsedTrack || parsedTrack < 1) {
+        throw new Error("Current item MP3 track is missing or invalid.");
       }
 
-      const itemsSnapshot = await getDocs(collection(db, "levels", levelId, "items"));
-      for (const itemDoc of itemsSnapshot.docs) {
-        await deleteDoc(doc(db, "levels", levelId, "items", itemDoc.id));
-      }
+      setIsBusy(true);
+      setIsListening(false);
+      setToyPromptActive(true);
+      setPageError("");
+      setLatestResult(null);
+      setStage("Sending item to toy...");
 
-      await deleteDoc(doc(db, "levels", levelId));
+      const activeSessionId = await createSession();
 
-      if (editingLevelId === levelId) {
-        cancelEditLevel();
-      }
+      const response = await fetch(`${SERVER}/practice-trigger`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: itemData.type || "word",
+          itemId: itemData.id,
+          type: itemData.type || "word",
+          targetText: itemData.text || "",
+          displayText: itemData.displayText || itemData.text || "",
+          attempt: currentAttempt,
+          sessionId: activeSessionId,
+          mp3Track: parsedTrack,
+          promptDelayMs: Number(itemData.promptDelayMs || 2500),
+        }),
+      });
 
-      if (selectedLevel === levelId) {
-        setItems([]);
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to trigger practice");
 
-      await fetchLevels();
-      showMessage("✅ Level and all items deleted successfully.");
+      const taskKey = data?.task?.taskKey || "";
+      setStage("Prompt is playing...");
+      startPolling(itemData, currentAttempt, activeSessionId, taskKey, itemIndex);
     } catch (error) {
-      console.error("Error deleting level:", error);
-      showMessage("❌ Failed to delete level.");
-    } finally {
-      setDeletingLevel(false);
+      console.error("Trigger error:", error);
+      setStage("Trigger failed");
+      setPageError(error.message || "Failed to trigger practice.");
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
     }
   };
 
-  const getSelectedLevelName = () => {
-    const level = levels.find((lvl) => lvl.id === selectedLevel);
-    return level ? level.title : "No level selected";
+  const startPolling = (
+    itemData,
+    currentAttempt,
+    activeSessionId,
+    taskKey = "",
+    itemIndex = 0
+  ) => {
+    stopPolling();
+    pollStartedAtRef.current = Date.now();
+
+    pollRef.current = setInterval(async () => {
+      try {
+        if (finishedRef.current) {
+          stopPolling();
+          return;
+        }
+
+        if (pollStartedAtRef.current && Date.now() - pollStartedAtRef.current > POLL_TIMEOUT_MS) {
+          stopPolling();
+          setIsListening(false);
+          setToyPromptActive(false);
+          setStage("Polling timeout");
+          setPageError("No response was received in time.");
+          setIsBusy(false);
+          return;
+        }
+
+        const url = taskKey
+          ? `${SERVER}/practice-result?taskKey=${encodeURIComponent(taskKey)}`
+          : `${SERVER}/practice-result`;
+
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!data.ready) {
+          if (data.stage === "waiting-for-esp") {
+            setToyPromptActive(true);
+            setIsListening(false);
+            setStage("Preparing...");
+          } else if (data.stage === "playing-prompt") {
+            setToyPromptActive(true);
+            setIsListening(false);
+            setStage("Playing prompt...");
+          } else if (data.stage === "listening") {
+            setToyPromptActive(false);
+            setIsListening(true);
+            setStage("Listening...");
+          } else if (data.stage === "processing-whisper") {
+            setToyPromptActive(false);
+            setIsListening(false);
+            setStage("Checking response...");
+          } else {
+            setStage("Waiting...");
+          }
+          return;
+        }
+
+        stopPolling();
+        setIsListening(false);
+        setToyPromptActive(false);
+        await handlePracticeResult(data, itemData, currentAttempt, activeSessionId, itemIndex);
+      } catch (error) {
+        console.error("Polling error:", error);
+        stopPolling();
+        setIsListening(false);
+        setToyPromptActive(false);
+        setStage("Polling failed");
+        setPageError(error.message || "Polling failed.");
+        setIsBusy(false);
+      }
+    }, POLL_INTERVAL_MS);
   };
 
-  const getSelectedLevelDescription = () => {
-    const level = levels.find((lvl) => lvl.id === selectedLevel);
-    return level ? level.description : "Choose a level to manage its items.";
+  const finishTherapySession = async (activeSessionId, finalProgress) => {
+    if (finishedRef.current) return;
+    finishedRef.current = true;
+    transitionRef.current = false;
+
+    setSessionCompleted(true);
+    setSessionStarted(false);
+    setSessionPaused(false);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setStage("Session completed");
+    stopTimer();
+    stopPolling();
+
+    await updateSessionSummary(activeSessionId, finalProgress, true);
+    await updateDailyUsage(child, finalProgress);
+
+    try {
+      await addDoc(collection(db, "sessionSummaries"), {
+        sessionId: activeSessionId,
+        childId: child?.id || state?.childId || "",
+        childName: child?.childName || state?.childName || "",
+        childCode: child?.childCode || state?.childCode || "",
+        levelId: levelInfo?.id || "",
+        levelTitle: levelInfo?.title || "",
+        sessionMode: "therapy",
+        totalItems: items.length,
+        attemptedItems: finalProgress.attemptedItems,
+        exactCount: finalProgress.exact,
+        closeCount: finalProgress.close,
+        partialCount: finalProgress.partial,
+        incorrectCount: finalProgress.incorrect,
+        overallScore: finalProgress.overallScore,
+        createdAt: serverTimestamp(),
+        elapsedSeconds,
+      });
+    } catch (error) {
+      console.error("Summary save error:", error);
+    }
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset after finish error:", error);
+    }
+
+    try {
+      await fetch(`${SERVER}/companion-start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          childId: child?.id || "",
+          childName: child?.childName || "",
+          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
+          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
+          startTrack: 23,
+        }),
+      });
+      setSelectedMode("companion");
+      setCompanionActive(true);
+      setStage("Companion mode active");
+    } catch (error) {
+      console.error("Companion start after finish error:", error);
+      setSelectedMode("companion");
+      setCompanionActive(false);
+      setStage("Returning to companion mode...");
+    }
   };
+
+  const handlePracticeResult = async (
+    resultData,
+    itemData,
+    currentAttempt,
+    activeSessionId,
+    itemIndex
+  ) => {
+    if (finishedRef.current) return;
+
+    setLatestResult(resultData);
+    setStage("Result received");
+
+    await saveAttempt(resultData, itemData, currentAttempt, activeSessionId);
+
+    let updatedProgress = null;
+
+    setProgress((prev) => {
+      const next = { ...prev };
+
+      if (resultData.moveNext) {
+        next.attemptedItems += 1;
+        if (resultData.matchStatus === "exact") next.exact += 1;
+        else if (resultData.matchStatus === "close") next.close += 1;
+        else if (resultData.matchStatus === "partial") next.partial += 1;
+        else next.incorrect += 1;
+      }
+
+      next.overallScore =
+        next.attemptedItems > 0
+          ? Math.round(
+              ((next.exact * 100 +
+                next.close * 80 +
+                next.partial * 50 +
+                next.incorrect * 20) /
+                (next.attemptedItems * 100)) *
+                100
+            )
+          : 0;
+
+      updatedProgress = next;
+      return next;
+    });
+
+    if (updatedProgress) {
+      await updateSessionSummary(activeSessionId, updatedProgress, false);
+    }
+
+    if (resultData.shouldRetry && currentAttempt < MAX_ATTEMPTS) {
+      const nextAttempt = currentAttempt + 1;
+      setAttempt(nextAttempt);
+      setStage(`Try again ${nextAttempt}/${MAX_ATTEMPTS}`);
+
+      setTimeout(() => {
+        if (!finishedRef.current) {
+          triggerPractice(itemData, nextAttempt, itemIndex);
+        }
+      }, 3200);
+
+      return;
+    }
+
+    setAttempt(1);
+
+    const nextIndex = itemIndex + 1;
+
+    if (nextIndex < items.length) {
+      transitionRef.current = true;
+      setStage("Moving to next item...");
+
+      setTimeout(() => {
+        if (finishedRef.current) return;
+
+        const nextItem = items[nextIndex];
+        setLatestResult(null);
+        setPageError("");
+        setCurrentIndex(nextIndex);
+        setIsBusy(false);
+        transitionRef.current = false;
+
+        if (nextItem) {
+          setTimeout(() => {
+            if (!finishedRef.current) {
+              triggerPractice(nextItem, 1, nextIndex);
+            }
+          }, 1400);
+        }
+      }, 1800);
+    } else if (updatedProgress) {
+      await finishTherapySession(activeSessionId, updatedProgress);
+    }
+  };
+
+  const beginTherapySession = async () => {
+    setPageError("");
+    setSessionBlocked(false);
+    finishedRef.current = false;
+    transitionRef.current = false;
+
+    const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+    setTherapyModeAllowed(therapyAccess.allowed);
+    setTherapyRestrictionMessage(therapyAccess.reason || "");
+
+    if (!therapyAccess.allowed) {
+      setSelectedMode("companion");
+      setSessionBlocked(true);
+      setPageError(therapyAccess.reason);
+      setStage("Therapy mode unavailable");
+      return;
+    }
+
+    if (!items.length) {
+      setSessionBlocked(true);
+      setPageError("No items found in the assigned level.");
+      return;
+    }
+
+    await stopCompanionMode();
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset before begin error:", error);
+    }
+
+    setSelectedMode("therapy");
+    setSessionStarted(true);
+    setSessionCompleted(false);
+    setSessionPaused(false);
+    setCurrentIndex(0);
+    setAttempt(1);
+    setElapsedSeconds(0);
+    setSessionId("");
+    setProgress({
+      attemptedItems: 0,
+      exact: 0,
+      close: 0,
+      partial: 0,
+      incorrect: 0,
+      overallScore: 0,
+    });
+    setLatestResult(null);
+    setStage("Therapy session started");
+    startTimer();
+
+    const firstItem = items[0];
+    if (firstItem) {
+      setTimeout(() => {
+        triggerPractice(firstItem, 1, 0);
+      }, 600);
+    }
+  };
+
+  const pauseSession = async () => {
+    if (!sessionStarted || sessionCompleted || sessionPaused) return;
+
+    stopPolling();
+    stopTimer();
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset on pause error:", error);
+    }
+
+    setSessionPaused(true);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setStage("Session paused");
+  };
+
+  const resumeSession = async () => {
+    if (!sessionStarted || sessionCompleted || !sessionPaused) return;
+
+    setSessionPaused(false);
+    startTimer();
+    setStage("Session resumed");
+
+    if (currentItem) {
+      setTimeout(() => {
+        triggerPractice(currentItem, attempt || 1, currentIndex);
+      }, 800);
+    }
+  };
+
+  const endSession = async () => {
+    stopPolling();
+    stopTimer();
+    finishedRef.current = true;
+    transitionRef.current = false;
+
+    if (!sessionId) {
+      setSessionStarted(false);
+      setSessionCompleted(true);
+      setSessionPaused(false);
+      setIsBusy(false);
+      setIsListening(false);
+      setToyPromptActive(false);
+      setStage("Session ended");
+      setSelectedMode("companion");
+      setCompanionActive(false);
+
+      try {
+        await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+      } catch (error) {
+        console.error("Practice reset after manual end error:", error);
+      }
+
+      try {
+        await activateCompanionMode();
+      } catch {
+        //
+      }
+
+      return;
+    }
+
+    const finalProgress = { ...progress };
+    await finishTherapySession(sessionId, finalProgress);
+  };
+
+  const restartAll = async () => {
+    stopPolling();
+    stopTimer();
+    finishedRef.current = false;
+    transitionRef.current = false;
+
+    try {
+      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+    } catch (error) {
+      console.error("Practice reset error:", error);
+    }
+
+    await stopCompanionMode();
+
+    setSessionId("");
+    setSessionStarted(false);
+    setSessionCompleted(false);
+    setSessionBlocked(false);
+    setSessionPaused(false);
+    setCurrentIndex(0);
+    setAttempt(1);
+    setStage("Ready");
+    setLatestResult(null);
+    setIsBusy(false);
+    setIsListening(false);
+    setToyPromptActive(false);
+    setElapsedSeconds(0);
+    setProgress({
+      attemptedItems: 0,
+      exact: 0,
+      close: 0,
+      partial: 0,
+      incorrect: 0,
+      overallScore: 0,
+    });
+    setPageError("");
+    setSelectedMode("companion");
+    setCompanionActive(false);
+
+    const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
+    setTherapyModeAllowed(therapyAccess.allowed);
+    setTherapyRestrictionMessage(therapyAccess.reason || "");
+
+    setTimeout(() => {
+      activateCompanionMode();
+    }, 500);
+  };
+
+  if (loading) {
+    return (
+      <div className="device-page">
+        <div className="device-loading">Loading device page...</div>
+      </div>
+    );
+  }
 
   return (
-    <div className="admin-dashboard">
-      <div className="admin-shell">
-        <section className="admin-hero">
-          <div className="admin-hero-left">
-            <div className="hero-badge">Pineda Admin Panel</div>
-            <h1>Speech Therapy Content Dashboard</h1>
-            <p>
-              Create levels, manage speech items, upload images, and map MP3
-              tracks for the device experience in one clean place.
-            </p>
+    <div className={`device-page ${selectedMode === "companion" ? "companion-theme" : ""}`}>
+      <div className="device-shell">
+        <div className="device-top-strip">
+          <div className="strip-card">
+            <span>Child</span>
+            <strong>{child?.childName || state?.childName || "-"}</strong>
+            <small>{child?.childCode || state?.childCode || "-"}</small>
           </div>
 
-          <div className="admin-hero-right">
-            <div className="hero-highlight-card">
-              <span className="hero-highlight-label">Selected Level</span>
-              <h3>{getSelectedLevelName()}</h3>
-              <p>{getSelectedLevelDescription()}</p>
-            </div>
+          <div className="strip-card">
+            <span>Level</span>
+            <strong>{levelInfo?.title || child?.assignedLevelName || "-"}</strong>
+            <small>{items.length} items</small>
           </div>
-        </section>
 
-        {message && <div className="message-box">{message}</div>}
+          <div className="strip-card">
+            <span>Device</span>
+            <strong>{deviceInfo?.deviceName || state?.deviceName || "-"}</strong>
+            <small>{deviceInfo?.deviceStatus || "-"}</small>
+          </div>
 
-        <section className="stats-grid">
-          <div className="stat-card">
-            <span className="stat-label">Total Levels</span>
-            <h3>{stats.totalLevels}</h3>
+          <div className="strip-card timer-card">
+            <span>{selectedMode === "therapy" ? "Session Timer" : "Companion"}</span>
+            <strong>
+              {selectedMode === "therapy"
+                ? formatTime(elapsedSeconds)
+                : companionActive
+                ? "Active"
+                : "Starting"}
+            </strong>
           </div>
-          <div className="stat-card">
-            <span className="stat-label">Items in Selected Level</span>
-            <h3>{stats.totalItems}</h3>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Sounds</span>
-            <h3>{stats.sounds}</h3>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Words</span>
-            <h3>{stats.words}</h3>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Sentences</span>
-            <h3>{stats.sentences}</h3>
-          </div>
-        </section>
+        </div>
 
-        <section className="top-grid">
-          <div className="admin-card glass-card">
-            <div className="card-heading">
-              <div>
-                <span className="section-kicker">Level Management</span>
-                <h2>Create New Level</h2>
+        {!therapyModeAllowed && (
+          <div className="device-banner warning-banner">
+            <strong>Therapy mode is resting.</strong> {therapyRestrictionMessage}
+          </div>
+        )}
+
+        {pageError && (
+          <div className="device-banner error-banner">
+            <strong>Notice:</strong> {pageError}
+          </div>
+        )}
+
+        <div className={`device-layout ${selectedMode === "companion" ? "companion-layout" : ""}`}>
+          <div className="main-device-card">
+            <div className="hero-header">
+              <div className="hero-heading">
+                <span className={`mode-pill ${selectedMode}`}>
+                  {selectedMode === "therapy" ? "Therapy Mode" : "Companion Mode"}
+                </span>
+                <h1>Speech Practice Device</h1>
+                <p>
+                  {selectedMode === "therapy"
+                    ? "A guided smart therapy experience is running automatically."
+                    : "The device is in companion mode and listening for keywords."}
+                </p>
               </div>
             </div>
 
-            <form onSubmit={handleAddLevel} className="admin-form">
-              <div className="form-group">
-                <label>Level Title</label>
-                <input
-                  type="text"
-                  placeholder="Enter level title"
-                  value={levelTitle}
-                  onChange={(e) => setLevelTitle(e.target.value)}
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Level Description</label>
-                <textarea
-                  placeholder="Enter level description"
-                  value={levelDescription}
-                  onChange={(e) => setLevelDescription(e.target.value)}
-                />
-              </div>
-
-              <button className="primary-btn" type="submit" disabled={loadingLevel}>
-                {loadingLevel ? "Adding..." : "Add Level"}
-              </button>
-            </form>
-          </div>
-
-          <div className="admin-card glass-card">
-            <div className="card-heading">
-              <div>
-                <span className="section-kicker">Item Management</span>
-                <h2>Add Sound / Word / Sentence</h2>
-              </div>
-            </div>
-
-            <form onSubmit={handleAddItem} className="admin-form">
-              <div className="form-group">
-                <label>Select Level</label>
-                <select
-                  value={selectedLevel}
-                  onChange={(e) => setSelectedLevel(e.target.value)}
-                >
-                  <option value="">Select Level</option>
-                  {levels.map((level) => (
-                    <option key={level.id} value={level.id}>
-                      {level.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-row two-cols">
-                <div className="form-group">
-                  <label>Item Type</label>
-                  <select
-                    value={itemType}
-                    onChange={(e) => setItemType(e.target.value)}
-                  >
-                    <option value="sound">Sound</option>
-                    <option value="word">Word</option>
-                    <option value="sentence">Sentence</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label>MP3 Track Number</label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    placeholder="e.g. 1 for 0001.mp3"
-                    value={mp3Track}
-                    onChange={(e) => setMp3Track(e.target.value)}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label>Text</label>
-                <input
-                  type="text"
-                  placeholder="Enter sound / word / sentence"
-                  value={itemText}
-                  onChange={(e) => setItemText(e.target.value)}
-                />
-              </div>
-
-              <div className="form-row two-cols">
-                <div className="form-group">
-                  <label>Prompt Delay (ms)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="100"
-                    placeholder="Default 2500"
-                    value={promptDelayMs}
-                    onChange={(e) => setPromptDelayMs(e.target.value)}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>Upload Image</label>
-                  <input
-                    id="imageUpload"
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => setImageFile(e.target.files[0])}
-                  />
-                </div>
-              </div>
-
-              <button className="primary-btn" type="submit" disabled={loadingItem}>
-                {loadingItem ? "Uploading..." : "Add Item"}
-              </button>
-            </form>
-          </div>
-        </section>
-
-        <section className="content-grid">
-          <div className="admin-card glass-card levels-panel">
-            <div className="card-heading">
-              <div>
-                <span className="section-kicker">Content Library</span>
-                <h2>Available Levels</h2>
-              </div>
-            </div>
-
-            {levels.length === 0 ? (
-              <p className="empty-text">No levels added yet.</p>
-            ) : (
-              <div className="levels-list">
-                {levels.map((level) => (
-                  <div
-                    key={level.id}
-                    className={`level-box ${
-                      selectedLevel === level.id ? "active-level" : ""
-                    }`}
-                    onClick={() => setSelectedLevel(level.id)}
-                  >
-                    {editingLevelId === level.id ? (
-                      <form
-                        className="edit-form"
-                        onSubmit={handleUpdateLevel}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="form-group">
-                          <label>Edit Title</label>
-                          <input
-                            type="text"
-                            value={editTitle}
-                            onChange={(e) => setEditTitle(e.target.value)}
-                            placeholder="Edit level title"
-                          />
-                        </div>
-
-                        <div className="form-group">
-                          <label>Edit Description</label>
-                          <textarea
-                            value={editDescription}
-                            onChange={(e) => setEditDescription(e.target.value)}
-                            placeholder="Edit level description"
-                          />
-                        </div>
-
-                        <div className="edit-buttons">
-                          <button
-                            className="primary-btn"
-                            type="submit"
-                            disabled={updatingLevel}
-                          >
-                            {updatingLevel ? "Saving..." : "Save"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-btn"
-                            onClick={cancelEditLevel}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </form>
-                    ) : (
-                      <>
-                        <div className="level-box-header">
-                          <div>
-                            <span className="level-chip">
-                              {selectedLevel === level.id ? "Active" : "Level"}
-                            </span>
-                            <h3>{level.title}</h3>
-                          </div>
-                        </div>
-
-                        <p>{level.description}</p>
-
-                        <div className="level-action-buttons">
-                          <button
-                            className="secondary-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditLevel(level);
-                            }}
-                          >
-                            Edit
-                          </button>
-
-                          <button
-                            className="danger-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteLevel(level.id);
-                            }}
-                            disabled={deletingLevel}
-                          >
-                            {deletingLevel && selectedLevel === level.id
-                              ? "Deleting..."
-                              : "Delete"}
-                          </button>
-                        </div>
-                      </>
-                    )}
+            <div className={`practice-zone ${selectedMode === "companion" ? "companion-only" : ""}`}>
+              <div className="practice-hero">
+                <div className="practice-status-row">
+                  <div className="status-chip">
+                    {selectedMode === "therapy"
+                      ? `Item ${items.length > 0 ? currentIndex + 1 : 0} / ${items.length}`
+                      : "Friendly Interaction"}
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
+                  <div className="status-chip secondary">
+                    {selectedMode === "therapy" ? currentItem?.type || "-" : "keyword listening"}
+                  </div>
+                </div>
 
-          <div className="admin-card glass-card items-panel">
-            <div className="items-header">
-              <div>
-                <span className="section-kicker">Level Content</span>
-                <h2>Items in {getSelectedLevelName()}</h2>
-              </div>
-            </div>
-
-            {items.length === 0 ? (
-              <p className="empty-text">No items added for this level yet.</p>
-            ) : (
-              <div className="items-grid">
-                {items.map((item) => (
-                  <div className="item-card" key={item.id}>
-                    {editingItemId === item.id ? (
-                      <form
-                        className="admin-form item-edit-form"
-                        onSubmit={(e) => handleUpdateItem(e, item)}
-                      >
+                {selectedMode === "therapy" ? (
+                  <>
+                    <div className="image-frame">
+                      {currentItem?.imageUrl ? (
                         <img
-                          src={item.imageUrl}
-                          alt={item.text}
+                          src={currentItem.imageUrl}
+                          alt={currentItem.text || "practice item"}
                           className="item-image"
                         />
+                      ) : (
+                        <div className="image-placeholder">No image available</div>
+                      )}
+                    </div>
 
-                        <div className="form-group">
-                          <label>Item Type</label>
-                          <select
-                            value={editItemType}
-                            onChange={(e) => setEditItemType(e.target.value)}
-                          >
-                            <option value="sound">Sound</option>
-                            <option value="word">Word</option>
-                            <option value="sentence">Sentence</option>
-                          </select>
-                        </div>
+                    <div className="word-area">
+                      <h2>{currentItem?.text || "No item found"}</h2>
+                      <p>{friendlyFeedback}</p>
+                    </div>
 
-                        <div className="form-group">
-                          <label>Text</label>
-                          <input
-                            type="text"
-                            placeholder="Edit item text"
-                            value={editItemText}
-                            onChange={(e) => setEditItemText(e.target.value)}
-                          />
-                        </div>
-
-                        <div className="form-row two-cols">
-                          <div className="form-group">
-                            <label>MP3 Track</label>
-                            <input
-                              type="number"
-                              min="1"
-                              step="1"
-                              placeholder="Edit MP3 track number"
-                              value={editMp3Track}
-                              onChange={(e) => setEditMp3Track(e.target.value)}
-                            />
-                          </div>
-
-                          <div className="form-group">
-                            <label>Prompt Delay</label>
-                            <input
-                              type="number"
-                              min="0"
-                              step="100"
-                              placeholder="Edit prompt delay"
-                              value={editPromptDelayMs}
-                              onChange={(e) =>
-                                setEditPromptDelayMs(e.target.value)
-                              }
-                            />
-                          </div>
-                        </div>
-
-                        <div className="form-group">
-                          <label>Replace Image</label>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={(e) => setEditImageFile(e.target.files[0])}
-                          />
-                        </div>
-
-                        <div className="edit-buttons">
-                          <button
-                            className="primary-btn"
-                            type="submit"
-                            disabled={updatingItem}
-                          >
-                            {updatingItem ? "Updating..." : "Save Item"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-btn"
-                            onClick={cancelEditItem}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </form>
-                    ) : (
-                      <>
-                        <div className="item-image-wrap">
-                          <img
-                            src={item.imageUrl}
-                            alt={item.text}
-                            className="item-image"
-                          />
-                        </div>
-
-                        <div className="item-body">
-                          <div className="item-top">
-                            <span className={`type-badge ${item.type}`}>
-                              {item.type}
-                            </span>
-                            <h4>{item.text}</h4>
-                          </div>
-
-                          <div className="item-meta">
-                            <div className="meta-row">
-                              <span>Track</span>
-                              <strong>{item.mp3Track ?? 0}</strong>
-                            </div>
-                            <div className="meta-row">
-                              <span>Delay</span>
-                              <strong>{item.promptDelayMs ?? 2500} ms</strong>
-                            </div>
-                          </div>
-
-                          <div className="item-action-buttons">
-                            <button
-                              className="secondary-btn"
-                              onClick={() => handleEditItem(item)}
-                            >
-                              Edit
-                            </button>
-
-                            <button
-                              className="danger-btn"
-                              onClick={() =>
-                                handleDeleteItem(item.id, item.storagePath)
-                              }
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    )}
+                    <div className="live-status-box">
+                      <span>Live Status</span>
+                      <strong>
+                        {isListening
+                          ? "Listening..."
+                          : toyPromptActive
+                          ? "Playing prompt..."
+                          : stage}
+                      </strong>
+                    </div>
+                  </>
+                ) : (
+                  <div className="companion-center-card">
+                    <div className="companion-emoji">🧸</div>
+                    <h2>Companion Mode</h2>
+                    <p>{friendlyFeedback}</p>
+                    <div className="live-status-box">
+                      <span>Current Status</span>
+                      <strong>{stage}</strong>
+                    </div>
                   </div>
-                ))}
+                )}
+
+                <div className="control-row">
+                  {selectedMode === "companion" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={beginTherapySession}
+                        disabled={!therapyModeAllowed || sessionBlocked || !items.length}
+                      >
+                        Start Therapy Session
+                      </button>
+
+                      <button type="button" className="ghost-btn" onClick={restartAll}>
+                        Restart Device Flow
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {sessionPaused ? (
+                        <button
+                          type="button"
+                          className="primary-btn"
+                          onClick={resumeSession}
+                          disabled={sessionCompleted}
+                        >
+                          Resume Session
+                        </button>
+                      ) : (
+                        <button type="button" className="primary-btn" disabled>
+                          Therapy Running
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={pauseSession}
+                        disabled={!sessionStarted || sessionCompleted || sessionPaused}
+                      >
+                        Pause
+                      </button>
+
+                      <button
+                        type="button"
+                        className="danger-btn"
+                        onClick={endSession}
+                        disabled={!sessionStarted || sessionCompleted}
+                      >
+                        End
+                      </button>
+
+                      <button type="button" className="ghost-btn" onClick={restartAll}>
+                        Restart
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            )}
+
+              {selectedMode === "therapy" && (
+                <div className="therapy-side-panel">
+                  <div className="side-panel-card">
+                    <span className="side-label">Session Progress</span>
+                    <div className="progress-ring-box">
+                      <strong>{completionPercent}%</strong>
+                      <small>Completed</small>
+                    </div>
+
+                    <div className="progress-bar-wrap">
+                      <div className="progress-bar">
+                        <div className="progress-fill" style={{ width: `${completionPercent}%` }} />
+                      </div>
+                    </div>
+
+                    <p>
+                      {progress.attemptedItems} of {items.length} items attempted
+                    </p>
+                  </div>
+
+                  <div className="side-panel-card highlight">
+                    <span className="side-label">Overall Progress</span>
+                    <strong className="overall-score">{progress.overallScore}%</strong>
+                    <p>Overall therapy progress based on completed practice items.</p>
+                  </div>
+
+                  <div className="side-panel-card">
+                    <span className="side-label">Current Status</span>
+                    <div className="status-grid">
+                      <div>
+                        <small>Stage</small>
+                        <strong>{stage}</strong>
+                      </div>
+                      <div>
+                        <small>Attempt</small>
+                        <strong>{attempt}/{MAX_ATTEMPTS}</strong>
+                      </div>
+                      <div>
+                        <small>Status</small>
+                        <strong>
+                          {sessionCompleted
+                            ? "Completed"
+                            : sessionPaused
+                            ? "Paused"
+                            : sessionStarted
+                            ? "Active"
+                            : "Ready"}
+                        </strong>
+                      </div>
+                      <div>
+                        <small>Mode</small>
+                        <strong>{selectedMode}</strong>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </section>
+        </div>
       </div>
     </div>
   );
 };
 
-export default AdminDashboard;
+export default DevicePage;
