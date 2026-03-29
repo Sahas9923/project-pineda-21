@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import "../styles/AdminDashboard.css";
 import { db, storage } from "../firebase/config";
 import {
@@ -63,6 +63,20 @@ const AdminDashboard = () => {
       setItems([]);
     }
   }, [selectedLevel]);
+
+  const stats = useMemo(() => {
+    const sounds = items.filter((item) => item.type === "sound").length;
+    const words = items.filter((item) => item.type === "word").length;
+    const sentences = items.filter((item) => item.type === "sentence").length;
+
+    return {
+      totalLevels: levels.length,
+      totalItems: items.length,
+      sounds,
+      words,
+      sentences,
+    };
+  }, [levels, items]);
 
   const showMessage = (text) => {
     setMessage(text);
@@ -429,306 +443,448 @@ const AdminDashboard = () => {
     return level ? level.title : "No level selected";
   };
 
+  const getSelectedLevelDescription = () => {
+    const level = levels.find((lvl) => lvl.id === selectedLevel);
+    return level ? level.description : "Choose a level to manage its items.";
+  };
+
   return (
     <div className="admin-dashboard">
-      <div className="admin-header">
-        <h1>Admin Dashboard</h1>
-        <p>
-          Manage speech practice levels and add sounds, words, or sentences with
-          images and MP3 tracks.
-        </p>
-      </div>
-
-      {message && <div className="message-box">{message}</div>}
-
-      <div className="admin-grid">
-        <div className="admin-card">
-          <h2>Add Level</h2>
-          <form onSubmit={handleAddLevel} className="admin-form">
-            <input
-              type="text"
-              placeholder="Enter level title"
-              value={levelTitle}
-              onChange={(e) => setLevelTitle(e.target.value)}
-            />
-
-            <textarea
-              placeholder="Enter level description"
-              value={levelDescription}
-              onChange={(e) => setLevelDescription(e.target.value)}
-            />
-
-            <button type="submit" disabled={loadingLevel}>
-              {loadingLevel ? "Adding..." : "Add Level"}
-            </button>
-          </form>
-        </div>
-
-        <div className="admin-card">
-          <h2>Add Sound / Word / Sentence</h2>
-          <form onSubmit={handleAddItem} className="admin-form">
-            <select
-              value={selectedLevel}
-              onChange={(e) => setSelectedLevel(e.target.value)}
-            >
-              <option value="">Select Level</option>
-              {levels.map((level) => (
-                <option key={level.id} value={level.id}>
-                  {level.title}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={itemType}
-              onChange={(e) => setItemType(e.target.value)}
-            >
-              <option value="sound">Sound</option>
-              <option value="word">Word</option>
-              <option value="sentence">Sentence</option>
-            </select>
-
-            <input
-              type="text"
-              placeholder="Enter sound / word / sentence"
-              value={itemText}
-              onChange={(e) => setItemText(e.target.value)}
-            />
-
-            <input
-              type="number"
-              min="1"
-              step="1"
-              placeholder="Enter MP3 track number (e.g. 1 for 0001.mp3)"
-              value={mp3Track}
-              onChange={(e) => setMp3Track(e.target.value)}
-            />
-
-            <input
-              type="number"
-              min="0"
-              step="100"
-              placeholder="Prompt delay in ms (default 2500)"
-              value={promptDelayMs}
-              onChange={(e) => setPromptDelayMs(e.target.value)}
-            />
-
-            <input
-              id="imageUpload"
-              type="file"
-              accept="image/*"
-              onChange={(e) => setImageFile(e.target.files[0])}
-            />
-
-            <button type="submit" disabled={loadingItem}>
-              {loadingItem ? "Uploading..." : "Add Item"}
-            </button>
-          </form>
-        </div>
-      </div>
-
-      <div className="admin-card levels-card">
-        <h2>Available Levels</h2>
-        {levels.length === 0 ? (
-          <p className="empty-text">No levels added yet.</p>
-        ) : (
-          <div className="levels-list">
-            {levels.map((level) => (
-              <div
-                key={level.id}
-                className={`level-box ${
-                  selectedLevel === level.id ? "active-level" : ""
-                }`}
-                onClick={() => setSelectedLevel(level.id)}
-              >
-                {editingLevelId === level.id ? (
-                  <form
-                    className="edit-form"
-                    onSubmit={handleUpdateLevel}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="text"
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      placeholder="Edit level title"
-                    />
-
-                    <textarea
-                      value={editDescription}
-                      onChange={(e) => setEditDescription(e.target.value)}
-                      placeholder="Edit level description"
-                    />
-
-                    <div className="edit-buttons">
-                      <button type="submit" disabled={updatingLevel}>
-                        {updatingLevel ? "Saving..." : "Save"}
-                      </button>
-                      <button
-                        type="button"
-                        className="cancel-btn"
-                        onClick={cancelEditLevel}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <>
-                    <h3>{level.title}</h3>
-                    <p>{level.description}</p>
-
-                    <div className="level-action-buttons">
-                      <button
-                        className="edit-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditLevel(level);
-                        }}
-                      >
-                        Edit Level
-                      </button>
-
-                      <button
-                        className="delete-level-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteLevel(level.id);
-                        }}
-                        disabled={deletingLevel}
-                      >
-                        {deletingLevel && selectedLevel === level.id
-                          ? "Deleting..."
-                          : "Delete Level"}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
+      <div className="admin-shell">
+        <section className="admin-hero">
+          <div className="admin-hero-left">
+            <div className="hero-badge">Pineda Admin Panel</div>
+            <h1>Speech Therapy Content Dashboard</h1>
+            <p>
+              Create levels, manage speech items, upload images, and map MP3
+              tracks for the device experience in one clean place.
+            </p>
           </div>
-        )}
-      </div>
 
-      <div className="admin-card">
-        <div className="items-header">
-          <h2>Items in {getSelectedLevelName()}</h2>
-        </div>
-
-        {items.length === 0 ? (
-          <p className="empty-text">No items added for this level yet.</p>
-        ) : (
-          <div className="items-grid">
-            {items.map((item) => (
-              <div className="item-card" key={item.id}>
-                {editingItemId === item.id ? (
-                  <form
-                    className="admin-form item-edit-form"
-                    onSubmit={(e) => handleUpdateItem(e, item)}
-                  >
-                    <img
-                      src={item.imageUrl}
-                      alt={item.text}
-                      className="item-image"
-                    />
-
-                    <select
-                      value={editItemType}
-                      onChange={(e) => setEditItemType(e.target.value)}
-                    >
-                      <option value="sound">Sound</option>
-                      <option value="word">Word</option>
-                      <option value="sentence">Sentence</option>
-                    </select>
-
-                    <input
-                      type="text"
-                      placeholder="Edit item text"
-                      value={editItemText}
-                      onChange={(e) => setEditItemText(e.target.value)}
-                    />
-
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      placeholder="Edit MP3 track number"
-                      value={editMp3Track}
-                      onChange={(e) => setEditMp3Track(e.target.value)}
-                    />
-
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      placeholder="Edit prompt delay"
-                      value={editPromptDelayMs}
-                      onChange={(e) => setEditPromptDelayMs(e.target.value)}
-                    />
-
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setEditImageFile(e.target.files[0])}
-                    />
-
-                    <div className="edit-buttons">
-                      <button type="submit" disabled={updatingItem}>
-                        {updatingItem ? "Updating..." : "Save Item"}
-                      </button>
-                      <button
-                        type="button"
-                        className="cancel-btn"
-                        onClick={cancelEditItem}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <>
-                    <img
-                      src={item.imageUrl}
-                      alt={item.text}
-                      className="item-image"
-                    />
-
-                    <div className="item-body">
-                      <span className={`type-badge ${item.type}`}>
-                        {item.type}
-                      </span>
-                      <h4>{item.text}</h4>
-                      <p>
-                        <strong>🎵 Track:</strong> {item.mp3Track ?? 0}
-                      </p>
-                      <p>
-                        <strong>⏱ Delay:</strong> {item.promptDelayMs ?? 2500} ms
-                      </p>
-
-                      <div className="item-action-buttons">
-                        <button
-                          className="edit-btn"
-                          onClick={() => handleEditItem(item)}
-                        >
-                          Edit Item
-                        </button>
-
-                        <button
-                          className="delete-btn"
-                          onClick={() =>
-                            handleDeleteItem(item.id, item.storagePath)
-                          }
-                        >
-                          Delete Item
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
+          <div className="admin-hero-right">
+            <div className="hero-highlight-card">
+              <span className="hero-highlight-label">Selected Level</span>
+              <h3>{getSelectedLevelName()}</h3>
+              <p>{getSelectedLevelDescription()}</p>
+            </div>
           </div>
-        )}
+        </section>
+
+        {message && <div className="message-box">{message}</div>}
+
+        <section className="stats-grid">
+          <div className="stat-card">
+            <span className="stat-label">Total Levels</span>
+            <h3>{stats.totalLevels}</h3>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Items in Selected Level</span>
+            <h3>{stats.totalItems}</h3>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Sounds</span>
+            <h3>{stats.sounds}</h3>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Words</span>
+            <h3>{stats.words}</h3>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Sentences</span>
+            <h3>{stats.sentences}</h3>
+          </div>
+        </section>
+
+        <section className="top-grid">
+          <div className="admin-card glass-card">
+            <div className="card-heading">
+              <div>
+                <span className="section-kicker">Level Management</span>
+                <h2>Create New Level</h2>
+              </div>
+            </div>
+
+            <form onSubmit={handleAddLevel} className="admin-form">
+              <div className="form-group">
+                <label>Level Title</label>
+                <input
+                  type="text"
+                  placeholder="Enter level title"
+                  value={levelTitle}
+                  onChange={(e) => setLevelTitle(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Level Description</label>
+                <textarea
+                  placeholder="Enter level description"
+                  value={levelDescription}
+                  onChange={(e) => setLevelDescription(e.target.value)}
+                />
+              </div>
+
+              <button className="primary-btn" type="submit" disabled={loadingLevel}>
+                {loadingLevel ? "Adding..." : "Add Level"}
+              </button>
+            </form>
+          </div>
+
+          <div className="admin-card glass-card">
+            <div className="card-heading">
+              <div>
+                <span className="section-kicker">Item Management</span>
+                <h2>Add Sound / Word / Sentence</h2>
+              </div>
+            </div>
+
+            <form onSubmit={handleAddItem} className="admin-form">
+              <div className="form-group">
+                <label>Select Level</label>
+                <select
+                  value={selectedLevel}
+                  onChange={(e) => setSelectedLevel(e.target.value)}
+                >
+                  <option value="">Select Level</option>
+                  {levels.map((level) => (
+                    <option key={level.id} value={level.id}>
+                      {level.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-row two-cols">
+                <div className="form-group">
+                  <label>Item Type</label>
+                  <select
+                    value={itemType}
+                    onChange={(e) => setItemType(e.target.value)}
+                  >
+                    <option value="sound">Sound</option>
+                    <option value="word">Word</option>
+                    <option value="sentence">Sentence</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>MP3 Track Number</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="e.g. 1 for 0001.mp3"
+                    value={mp3Track}
+                    onChange={(e) => setMp3Track(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Text</label>
+                <input
+                  type="text"
+                  placeholder="Enter sound / word / sentence"
+                  value={itemText}
+                  onChange={(e) => setItemText(e.target.value)}
+                />
+              </div>
+
+              <div className="form-row two-cols">
+                <div className="form-group">
+                  <label>Prompt Delay (ms)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    placeholder="Default 2500"
+                    value={promptDelayMs}
+                    onChange={(e) => setPromptDelayMs(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Upload Image</label>
+                  <input
+                    id="imageUpload"
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setImageFile(e.target.files[0])}
+                  />
+                </div>
+              </div>
+
+              <button className="primary-btn" type="submit" disabled={loadingItem}>
+                {loadingItem ? "Uploading..." : "Add Item"}
+              </button>
+            </form>
+          </div>
+        </section>
+
+        <section className="content-grid">
+          <div className="admin-card glass-card levels-panel">
+            <div className="card-heading">
+              <div>
+                <span className="section-kicker">Content Library</span>
+                <h2>Available Levels</h2>
+              </div>
+            </div>
+
+            {levels.length === 0 ? (
+              <p className="empty-text">No levels added yet.</p>
+            ) : (
+              <div className="levels-list">
+                {levels.map((level) => (
+                  <div
+                    key={level.id}
+                    className={`level-box ${
+                      selectedLevel === level.id ? "active-level" : ""
+                    }`}
+                    onClick={() => setSelectedLevel(level.id)}
+                  >
+                    {editingLevelId === level.id ? (
+                      <form
+                        className="edit-form"
+                        onSubmit={handleUpdateLevel}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="form-group">
+                          <label>Edit Title</label>
+                          <input
+                            type="text"
+                            value={editTitle}
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            placeholder="Edit level title"
+                          />
+                        </div>
+
+                        <div className="form-group">
+                          <label>Edit Description</label>
+                          <textarea
+                            value={editDescription}
+                            onChange={(e) => setEditDescription(e.target.value)}
+                            placeholder="Edit level description"
+                          />
+                        </div>
+
+                        <div className="edit-buttons">
+                          <button
+                            className="primary-btn"
+                            type="submit"
+                            disabled={updatingLevel}
+                          >
+                            {updatingLevel ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={cancelEditLevel}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <div className="level-box-header">
+                          <div>
+                            <span className="level-chip">
+                              {selectedLevel === level.id ? "Active" : "Level"}
+                            </span>
+                            <h3>{level.title}</h3>
+                          </div>
+                        </div>
+
+                        <p>{level.description}</p>
+
+                        <div className="level-action-buttons">
+                          <button
+                            className="secondary-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditLevel(level);
+                            }}
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            className="danger-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteLevel(level.id);
+                            }}
+                            disabled={deletingLevel}
+                          >
+                            {deletingLevel && selectedLevel === level.id
+                              ? "Deleting..."
+                              : "Delete"}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="admin-card glass-card items-panel">
+            <div className="items-header">
+              <div>
+                <span className="section-kicker">Level Content</span>
+                <h2>Items in {getSelectedLevelName()}</h2>
+              </div>
+            </div>
+
+            {items.length === 0 ? (
+              <p className="empty-text">No items added for this level yet.</p>
+            ) : (
+              <div className="items-grid">
+                {items.map((item) => (
+                  <div className="item-card" key={item.id}>
+                    {editingItemId === item.id ? (
+                      <form
+                        className="admin-form item-edit-form"
+                        onSubmit={(e) => handleUpdateItem(e, item)}
+                      >
+                        <img
+                          src={item.imageUrl}
+                          alt={item.text}
+                          className="item-image"
+                        />
+
+                        <div className="form-group">
+                          <label>Item Type</label>
+                          <select
+                            value={editItemType}
+                            onChange={(e) => setEditItemType(e.target.value)}
+                          >
+                            <option value="sound">Sound</option>
+                            <option value="word">Word</option>
+                            <option value="sentence">Sentence</option>
+                          </select>
+                        </div>
+
+                        <div className="form-group">
+                          <label>Text</label>
+                          <input
+                            type="text"
+                            placeholder="Edit item text"
+                            value={editItemText}
+                            onChange={(e) => setEditItemText(e.target.value)}
+                          />
+                        </div>
+
+                        <div className="form-row two-cols">
+                          <div className="form-group">
+                            <label>MP3 Track</label>
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              placeholder="Edit MP3 track number"
+                              value={editMp3Track}
+                              onChange={(e) => setEditMp3Track(e.target.value)}
+                            />
+                          </div>
+
+                          <div className="form-group">
+                            <label>Prompt Delay</label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="100"
+                              placeholder="Edit prompt delay"
+                              value={editPromptDelayMs}
+                              onChange={(e) =>
+                                setEditPromptDelayMs(e.target.value)
+                              }
+                            />
+                          </div>
+                        </div>
+
+                        <div className="form-group">
+                          <label>Replace Image</label>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => setEditImageFile(e.target.files[0])}
+                          />
+                        </div>
+
+                        <div className="edit-buttons">
+                          <button
+                            className="primary-btn"
+                            type="submit"
+                            disabled={updatingItem}
+                          >
+                            {updatingItem ? "Updating..." : "Save Item"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={cancelEditItem}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <div className="item-image-wrap">
+                          <img
+                            src={item.imageUrl}
+                            alt={item.text}
+                            className="item-image"
+                          />
+                        </div>
+
+                        <div className="item-body">
+                          <div className="item-top">
+                            <span className={`type-badge ${item.type}`}>
+                              {item.type}
+                            </span>
+                            <h4>{item.text}</h4>
+                          </div>
+
+                          <div className="item-meta">
+                            <div className="meta-row">
+                              <span>Track</span>
+                              <strong>{item.mp3Track ?? 0}</strong>
+                            </div>
+                            <div className="meta-row">
+                              <span>Delay</span>
+                              <strong>{item.promptDelayMs ?? 2500} ms</strong>
+                            </div>
+                          </div>
+
+                          <div className="item-action-buttons">
+                            <button
+                              className="secondary-btn"
+                              onClick={() => handleEditItem(item)}
+                            >
+                              Edit
+                            </button>
+
+                            <button
+                              className="danger-btn"
+                              onClick={() =>
+                                handleDeleteItem(item.id, item.storagePath)
+                              }
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );
