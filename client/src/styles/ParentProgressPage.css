@@ -84,6 +84,7 @@
 .child-selector-wrap {
   margin-top: 22px;
   max-width: 340px;
+  align-self: center
 }
 
 .child-selector-wrap label {
@@ -92,6 +93,7 @@
   font-size: 13px;
   font-weight: 700;
   color: #52728f;
+  
 }
 
 .child-selector {
