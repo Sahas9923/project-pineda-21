@@ -18,8 +18,8 @@ import {
 
 const SERVER = "https://project-pineda-21-backend.onrender.com";
 const MAX_ATTEMPTS = 3;
-const POLL_INTERVAL_MS = 1500;
-const POLL_TIMEOUT_MS = 35000;
+const SUCCESS_THRESHOLD = 70;
+const SESSION_END_TO_COMPANION_DELAY_MS = 10000;
 
 const DevicePage = () => {
   const { state } = useLocation();
@@ -51,62 +51,103 @@ const DevicePage = () => {
   const [attempt, setAttempt] = useState(1);
   const [stage, setStage] = useState("Ready");
   const [latestResult, setLatestResult] = useState(null);
-  const [isBusy, setIsBusy] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [toyPromptActive, setToyPromptActive] = useState(false);
 
+  const [isBusy, setIsBusy] = useState(false);
+  const [isPromptPlaying, setIsPromptPlaying] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [progress, setProgress] = useState({
     attemptedItems: 0,
-    exact: 0,
-    close: 0,
-    partial: 0,
-    incorrect: 0,
+    completedItems: 0,
     overallScore: 0,
+    initialAverage: 0,
+    middleAverage: 0,
+    endAverage: 0,
+    totalInitial: 0,
+    totalMiddle: 0,
+    totalEnd: 0,
   });
 
-  const pollRef = useRef(null);
-  const pollStartedAtRef = useRef(null);
   const timerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const currentAudioRef = useRef(null);
+  const isMountedRef = useRef(true);
+  const speechRef = useRef(null);
+  const companionTimeoutRef = useRef(null);
 
   const currentItem = useMemo(() => items[currentIndex] || null, [items, currentIndex]);
 
   const completionPercent =
-    items.length > 0 ? Math.round((progress.attemptedItems / items.length) * 100) : 0;
+    items.length > 0 ? Math.round((progress.completedItems / items.length) * 100) : 0;
 
   const friendlyFeedback = useMemo(() => {
     if (selectedMode === "companion") {
       if (pageError) return pageError;
-      return companionActive
-        ? "Companion mode is active and waiting for a keyword."
-        : "Preparing companion mode.";
+      return companionActive ? "Companion mode is active." : "Companion mode is ready.";
     }
 
     if (!latestResult) {
       if (sessionPaused) return "Therapy session paused.";
       if (sessionCompleted) return "Therapy session completed.";
+      if (isPromptPlaying) return "Listen carefully.";
+      if (isListening) return "Please speak now.";
+      if (isUploading) return "Checking response.";
       return "Therapy session is running.";
     }
 
-    if (latestResult.matchStatus === "exact") return "Excellent work.";
-    if (latestResult.matchStatus === "close") return "Very close.";
-    if (latestResult.matchStatus === "partial") return "Good try.";
-    return "Try once more.";
-  }, [selectedMode, companionActive, pageError, sessionPaused, sessionCompleted, latestResult]);
+    return latestResult.feedback || "Good try.";
+  }, [
+    selectedMode,
+    companionActive,
+    pageError,
+    latestResult,
+    sessionPaused,
+    sessionCompleted,
+    isPromptPlaying,
+    isListening,
+    isUploading,
+  ]);
+
+  const speakText = (text) => {
+    try {
+      if (!text || typeof window === "undefined" || !window.speechSynthesis) return;
+
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.95;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      speechRef.current = utterance;
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.error("Speech synthesis error:", error);
+    }
+  };
+
+  const stopSpeech = () => {
+    try {
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (error) {
+      console.error("Stop speech error:", error);
+    }
+  };
+
+  const clearCompanionTimeout = () => {
+    if (companionTimeoutRef.current) {
+      clearTimeout(companionTimeoutRef.current);
+      companionTimeoutRef.current = null;
+    }
+  };
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
-  };
-
-  const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    pollStartedAtRef.current = null;
   };
 
   const stopTimer = () => {
@@ -121,6 +162,40 @@ const DevicePage = () => {
     timerRef.current = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1);
     }, 1000);
+  };
+
+  const stopCurrentAudio = () => {
+    try {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+        currentAudioRef.current = null;
+      }
+    } catch (error) {
+      console.error("Audio stop error:", error);
+    }
+  };
+
+  const cleanupRecorder = () => {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+    } catch (error) {
+      console.error("Recorder cleanup error:", error);
+    }
+
+    try {
+      if (recordingStreamRef.current) {
+        recordingStreamRef.current.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+    } catch (error) {
+      console.error("Stream cleanup error:", error);
+    }
+
+    mediaRecorderRef.current = null;
+    setIsListening(false);
   };
 
   const getTodayKey = () => {
@@ -175,17 +250,122 @@ const DevicePage = () => {
 
   const sortItems = (itemList) => {
     return [...itemList].sort((a, b) => {
-      const aTrack = Number(a?.mp3Track || 0);
-      const bTrack = Number(b?.mp3Track || 0);
-
-      if (aTrack > 0 && bTrack > 0 && aTrack !== bTrack) {
-        return aTrack - bTrack;
-      }
-
       const aCreated = a?.createdAt?.seconds || 0;
       const bCreated = b?.createdAt?.seconds || 0;
       return aCreated - bCreated;
     });
+  };
+
+  const getItemPromptAudioUrl = (item) => {
+    if (!item) return "";
+    return item.audioUrl || "";
+  };
+
+  const getItemMediaUrl = (item) => {
+    if (!item) return "";
+    if (item.visualType === "video") return item.videoUrl || "";
+    if (item.visualType === "gif") return item.gifUrl || "";
+    return item.imageUrl || "";
+  };
+
+  const getFallbackMp3Track = (itemData, itemIndex) => {
+    const parsed = Number(itemData?.mp3Track);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+    return itemIndex + 1;
+  };
+
+  const generateRandomPhonemeScores = () => {
+    const initial = Math.floor(Math.random() * 41) + 60;
+    const middle = Math.floor(Math.random() * 41) + 55;
+    const end = Math.floor(Math.random() * 41) + 60;
+    const total = Math.round((initial + middle + end) / 3);
+
+    return {
+      initial,
+      middle,
+      end,
+      total,
+    };
+  };
+
+  const buildSimulationFeedback = (total, currentAttempt) => {
+    if (total >= SUCCESS_THRESHOLD) return "Excellent, well done!";
+    if (currentAttempt < MAX_ATTEMPTS) return "Try again.";
+    return "Good try. Moving to the next item.";
+  };
+
+  const playAudioUrl = (audioUrl) => {
+    return new Promise((resolve, reject) => {
+      if (!audioUrl) {
+        resolve();
+        return;
+      }
+
+      try {
+        stopCurrentAudio();
+
+        const audio = new Audio(audioUrl);
+        currentAudioRef.current = audio;
+        setIsPromptPlaying(true);
+
+        audio.onended = () => {
+          setIsPromptPlaying(false);
+          currentAudioRef.current = null;
+          resolve();
+        };
+
+        audio.onerror = (error) => {
+          setIsPromptPlaying(false);
+          currentAudioRef.current = null;
+          reject(error);
+        };
+
+        audio.play().catch((error) => {
+          setIsPromptPlaying(false);
+          currentAudioRef.current = null;
+          reject(error);
+        });
+      } catch (error) {
+        setIsPromptPlaying(false);
+        reject(error);
+      }
+    });
+  };
+
+  const safeReadJson = async (response, fallbackMessage = "Request failed") => {
+    const text = await response.text();
+
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(
+        text?.startsWith("<")
+          ? "Server returned HTML instead of JSON. Check route URL."
+          : fallbackMessage
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(data?.error || data?.message || fallbackMessage);
+    }
+
+    return data;
+  };
+
+  const postJson = async (url, body, fallbackMessage = "Request failed") => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    return safeReadJson(response, fallbackMessage);
+  };
+
+  const getJson = async (url, fallbackMessage = "Request failed") => {
+    const response = await fetch(url);
+    return safeReadJson(response, fallbackMessage);
   };
 
   const evaluateTherapyAvailability = async (childData, planData) => {
@@ -309,7 +489,11 @@ const DevicePage = () => {
       }
 
       const deviceDocId =
-        state?.deviceId || childData.deviceId || childData.deviceCode || "";
+        state?.deviceCode ||
+        state?.deviceId ||
+        childData.deviceCode ||
+        childData.deviceId ||
+        "";
 
       if (deviceDocId) {
         const deviceSnap = await getDoc(doc(db, "devices", deviceDocId));
@@ -318,8 +502,8 @@ const DevicePage = () => {
         } else {
           setDeviceInfo({
             id: deviceDocId,
-            deviceId: childData.deviceId || state?.deviceId || "",
             deviceCode: childData.deviceCode || state?.deviceCode || "",
+            deviceId: childData.deviceId || state?.deviceId || "",
             deviceName: childData.deviceName || state?.deviceName || "Assigned Device",
             deviceStatus: childData.deviceStatus || "Assigned",
           });
@@ -340,48 +524,97 @@ const DevicePage = () => {
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadPageData();
+
     return () => {
-      stopPolling();
+      isMountedRef.current = false;
       stopTimer();
+      stopCurrentAudio();
+      cleanupRecorder();
+      stopSpeech();
+      clearCompanionTimeout();
     };
   }, []);
+
+  useEffect(() => {
+    if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
+    if (selectedMode !== "therapy") return;
+
+    const maxSeconds = Number(therapyPlanData.sessionDurationMinutes) * 60;
+
+    if (maxSeconds > 0 && elapsedSeconds >= maxSeconds) {
+      const autoFinishFromTimeLimit = async () => {
+        stopTimer();
+        stopCurrentAudio();
+        cleanupRecorder();
+        stopSpeech();
+
+        setIsBusy(false);
+        setIsListening(false);
+        setIsUploading(false);
+        setIsPromptPlaying(false);
+        setStage("Session duration limit reached");
+
+        const finalProgress = { ...progress };
+
+        if (sessionId) {
+          await finishTherapySession(sessionId, finalProgress);
+        } else {
+          setSessionCompleted(true);
+          setSessionStarted(false);
+          setSessionPaused(false);
+          setSelectedMode("companion");
+          setCompanionActive(false);
+          setLatestResult(null);
+
+          clearCompanionTimeout();
+          companionTimeoutRef.current = setTimeout(async () => {
+            await stopCompanionMode();
+            await activateCompanionMode();
+          }, SESSION_END_TO_COMPANION_DELAY_MS);
+        }
+      };
+
+      autoFinishFromTimeLimit();
+    }
+  }, [
+    elapsedSeconds,
+    sessionStarted,
+    sessionCompleted,
+    therapyPlanData,
+    selectedMode,
+    sessionId,
+    progress,
+  ]);
 
   const activateCompanionMode = async () => {
     try {
       setSelectedMode("companion");
-      setPageError("");
-      setStage("Activating companion mode...");
-
-      const response = await fetch(`${SERVER}/companion-start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          childId: child?.id || "",
-          childName: child?.childName || "",
-          deviceId: deviceInfo?.id || state?.deviceId || child?.deviceId || "",
-          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || child?.deviceCode || "",
-          startTrack: 23,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to start companion mode");
-
       setCompanionActive(true);
-      setStage(data.message || "Companion mode active");
       setLatestResult(null);
+      setStage("Companion mode active");
+
+      await postJson(
+        `${SERVER}/companion-start`,
+        {
+          childId: child?.id || state?.childId || "",
+          childName: child?.childName || state?.childName || "",
+          deviceId: deviceInfo?.deviceId || state?.deviceId || "",
+          deviceCode: deviceInfo?.deviceCode || state?.deviceCode || "",
+          startTrack: 23,
+        },
+        "Failed to activate companion mode."
+      );
     } catch (error) {
-      console.error("Companion mode error:", error);
-      setCompanionActive(false);
-      setPageError(error.message || "Failed to start companion mode.");
-      setStage("Companion mode failed");
+      console.error("Companion start error:", error);
+      setPageError(error.message || "Failed to activate companion mode.");
     }
   };
 
   const stopCompanionMode = async () => {
     try {
-      await fetch(`${SERVER}/companion-stop`, { method: "POST" });
+      await postJson(`${SERVER}/companion-stop`, {}, "Failed to stop companion mode.");
     } catch (error) {
       console.error("Companion stop error:", error);
     } finally {
@@ -395,28 +628,17 @@ const DevicePage = () => {
     }
   }, [loading, selectedMode, sessionStarted, companionActive]);
 
-  useEffect(() => {
-    if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
-    if (selectedMode !== "therapy") return;
-
-    const maxSeconds = Number(therapyPlanData.sessionDurationMinutes) * 60;
-    if (maxSeconds > 0 && elapsedSeconds >= maxSeconds) {
-      stopPolling();
-      stopTimer();
-      setSessionCompleted(true);
-      setSessionStarted(false);
-      setSessionPaused(false);
-      setIsBusy(false);
-      setIsListening(false);
-      setToyPromptActive(false);
-      setStage("Session duration limit reached");
-      setPageError("This therapy session reached the allowed time limit.");
-    }
-  }, [elapsedSeconds, sessionStarted, sessionCompleted, therapyPlanData, selectedMode]);
-
   const createSession = async () => {
     if (!child) return "";
     if (sessionId) return sessionId;
+
+    const finalDeviceCode =
+      state?.deviceCode ||
+      child.deviceCode ||
+      deviceInfo?.deviceCode ||
+      state?.deviceId ||
+      child.deviceId ||
+      "";
 
     const sessionRef = await addDoc(collection(db, "sessions"), {
       childId: child.id,
@@ -429,54 +651,62 @@ const DevicePage = () => {
       therapistUid: therapist?.id || state?.therapistUid || child.therapistUid || "",
       therapistName: therapist?.name || child.therapistName || "",
       therapistContact: therapist?.contact || child.therapistContact || "",
-      deviceId: state?.deviceId || child.deviceId || child.deviceCode || "",
-      deviceCode: state?.deviceCode || child.deviceCode || child.deviceId || "",
+      deviceCode: finalDeviceCode,
       deviceName:
-        state?.deviceName ||
         child.deviceName ||
+        state?.deviceName ||
         deviceInfo?.deviceName ||
         "Assigned Device",
       levelId: levelInfo?.id || state?.assignedLevelId || child.assignedLevelId || "",
       levelTitle: levelInfo?.title || child.assignedLevelName || "",
       therapyPlan: therapyPlanData || null,
       sessionMode: "therapy",
+      sessionSource: "laptop",
       sessionDate: getTodayKey(),
       startedAt: serverTimestamp(),
       endedAt: null,
       status: "active",
       totalItems: items.length,
       attemptedItems: 0,
-      exactCount: 0,
-      closeCount: 0,
-      partialCount: 0,
-      incorrectCount: 0,
+      completedItems: 0,
       overallScore: 0,
+      initialAverage: 0,
+      middleAverage: 0,
+      endAverage: 0,
     });
 
     setSessionId(sessionRef.id);
     return sessionRef.id;
   };
 
-  const saveAttempt = async (resultData, itemData, currentAttempt, activeSessionId) => {
+  const saveAttempt = async (resultData, itemData, currentAttempt, activeSessionId, itemIndex) => {
     if (!activeSessionId || !itemData) return;
 
     await addDoc(collection(db, "sessions", activeSessionId, "attempts"), {
       itemId: itemData.id,
       itemText: itemData.text || "",
       itemType: itemData.type || "word",
-      itemImage: itemData.imageUrl || "",
-      mp3Track: Number(itemData.mp3Track || 0),
+      visualType: itemData.visualType || "image",
+      imageUrl: itemData.imageUrl || "",
+      gifUrl: itemData.gifUrl || "",
+      videoUrl: itemData.videoUrl || "",
+      audioUrl: itemData.audioUrl || "",
+      mp3Track: getFallbackMp3Track(itemData, itemIndex),
       attemptNumber: currentAttempt,
       recognizedText: resultData.recognizedText || "",
-      targetText: resultData.targetText || "",
-      score: resultData.score || 0,
-      matchStatus: resultData.matchStatus || "incorrect",
-      feedback: resultData.feedback || "",
-      feedbackTrack: Number(resultData.feedbackTrack || 0),
-      movedToNext: !!resultData.moveNext,
-      shouldRetry: !!resultData.shouldRetry,
+      targetText: resultData.targetText || itemData.text || "",
+      score: Number(resultData.score || 0),
+      phonemePositionScores: {
+        initial: Number(resultData?.phonemePositionScores?.initial || 0),
+        middle: Number(resultData?.phonemePositionScores?.middle || 0),
+        end: Number(resultData?.phonemePositionScores?.end || 0),
+      },
       createdAt: serverTimestamp(),
       time: resultData.time || new Date().toISOString(),
+      feedback: resultData.feedback || "",
+      movedToNext: !!resultData.moveNext,
+      shouldRetry: !!resultData.shouldRetry,
+      analysisMode: "simulated_initial_middle_end",
     });
   };
 
@@ -502,6 +732,9 @@ const DevicePage = () => {
       lastSessionDate: todayKey,
       todaySessionCount: todayCount + 1,
       latestOverallScore: finalProgress.overallScore,
+      latestInitialAverage: finalProgress.initialAverage,
+      latestMiddleAverage: finalProgress.middleAverage,
+      latestEndAverage: finalProgress.endAverage,
       latestSessionCompletedAt: serverTimestamp(),
     });
   };
@@ -511,132 +744,129 @@ const DevicePage = () => {
 
     await updateDoc(doc(db, "sessions", activeSessionId), {
       attemptedItems: updatedProgress.attemptedItems,
-      exactCount: updatedProgress.exact,
-      closeCount: updatedProgress.close,
-      partialCount: updatedProgress.partial,
-      incorrectCount: updatedProgress.incorrect,
+      completedItems: updatedProgress.completedItems,
       overallScore: updatedProgress.overallScore,
+      initialAverage: updatedProgress.initialAverage,
+      middleAverage: updatedProgress.middleAverage,
+      endAverage: updatedProgress.endAverage,
       status: completed ? "completed" : "active",
       endedAt: completed ? serverTimestamp() : null,
+      scoringMode: "simulated_initial_middle_end",
     });
   };
 
-  const triggerPractice = async (itemData, currentAttempt, itemIndex) => {
-    try {
-      if (!itemData?.text) throw new Error("Current item text is missing.");
+  const startLaptopRecording = async () => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        cleanupRecorder();
 
-      const parsedTrack = Number(itemData.mp3Track || 0);
-      if (!parsedTrack || parsedTrack < 1) {
-        throw new Error("Current item MP3 track is missing or invalid.");
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        recordingStreamRef.current = stream;
+
+        const recorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = recorder;
+
+        const chunks = [];
+
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+          }
+        };
+
+        recorder.onerror = (event) => {
+          console.error("Recorder error:", event);
+          cleanupRecorder();
+          reject(new Error("Microphone recording failed."));
+        };
+
+        recorder.onstop = async () => {
+          try {
+            setIsListening(false);
+            const audioBlob = new Blob(chunks, { type: "audio/webm" });
+            cleanupRecorder();
+            resolve(audioBlob);
+          } catch (error) {
+            cleanupRecorder();
+            reject(error);
+          }
+        };
+
+        setIsListening(true);
+        recorder.start();
+
+        setTimeout(() => {
+          try {
+            if (recorder.state !== "inactive") {
+              recorder.stop();
+            }
+          } catch (error) {
+            cleanupRecorder();
+            reject(error);
+          }
+        }, 3500);
+      } catch (error) {
+        cleanupRecorder();
+        reject(error);
       }
-
-      setIsBusy(true);
-      setIsListening(false);
-      setToyPromptActive(true);
-      setPageError("");
-      setLatestResult(null);
-      setStage("Sending item to toy...");
-
-      const activeSessionId = await createSession();
-
-      const response = await fetch(`${SERVER}/practice-trigger`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          category: itemData.type || "word",
-          itemId: itemData.id,
-          type: itemData.type || "word",
-          targetText: itemData.text || "",
-          displayText: itemData.displayText || itemData.text || "",
-          attempt: currentAttempt,
-          sessionId: activeSessionId,
-          mp3Track: parsedTrack,
-          promptDelayMs: Number(itemData.promptDelayMs || 2500),
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to trigger practice");
-
-      const taskKey = data?.task?.taskKey || "";
-      setStage("Prompt is playing...");
-      startPolling(itemData, currentAttempt, activeSessionId, taskKey, itemIndex);
-    } catch (error) {
-      console.error("Trigger error:", error);
-      setStage("Trigger failed");
-      setPageError(error.message || "Failed to trigger practice.");
-      setIsBusy(false);
-      setIsListening(false);
-      setToyPromptActive(false);
-    }
+    });
   };
 
-  const startPolling = (
-    itemData,
-    currentAttempt,
-    activeSessionId,
-    taskKey = "",
-    itemIndex = 0
-  ) => {
-    stopPolling();
-    pollStartedAtRef.current = Date.now();
+  const triggerPracticeTask = async (itemData, currentAttempt, activeSessionId, itemIndex) => {
+    if (!itemData?.id) {
+      throw new Error("Item id is missing.");
+    }
 
-    pollRef.current = setInterval(async () => {
-      try {
-        if (pollStartedAtRef.current && Date.now() - pollStartedAtRef.current > POLL_TIMEOUT_MS) {
-          stopPolling();
-          setIsListening(false);
-          setToyPromptActive(false);
-          setStage("Polling timeout");
-          setPageError("No response was received in time.");
-          setIsBusy(false);
-          return;
-        }
+    if (!itemData?.text?.trim()) {
+      throw new Error("Item text is missing.");
+    }
 
-        const url = taskKey
-          ? `${SERVER}/practice-result?taskKey=${encodeURIComponent(taskKey)}`
-          : `${SERVER}/practice-result`;
+    const data = await postJson(
+      `${SERVER}/practice-trigger`,
+      {
+        category: itemData?.type || "word",
+        itemId: itemData?.id || "",
+        type: itemData?.type || "word",
+        targetText: itemData?.text || "",
+        displayText: itemData?.text || "",
+        attempt: currentAttempt,
+        sessionId: activeSessionId || "",
+        mp3Track: getFallbackMp3Track(itemData, itemIndex),
+        promptDelayMs: Number(itemData?.promptDelayMs || 700),
+      },
+      "Failed to create practice task."
+    );
 
-        const response = await fetch(url);
-        const data = await response.json();
+    return data?.task || null;
+  };
 
-        if (!data.ready) {
-          if (data.stage === "waiting-for-esp") {
-            setToyPromptActive(true);
-            setIsListening(false);
-            setStage("Preparing...");
-          } else if (data.stage === "playing-prompt") {
-            setToyPromptActive(true);
-            setIsListening(false);
-            setStage("Playing prompt...");
-          } else if (data.stage === "listening") {
-            setToyPromptActive(false);
-            setIsListening(true);
-            setStage("Listening...");
-          } else if (data.stage === "processing-whisper") {
-            setToyPromptActive(false);
-            setIsListening(false);
-            setStage("Checking response...");
-          } else {
-            setStage("Waiting...");
-          }
-          return;
-        }
+  const sendPracticeAudioToBackend = async (audioBlob) => {
+    const arrayBuffer = await audioBlob.arrayBuffer();
 
-        stopPolling();
-        setIsListening(false);
-        setToyPromptActive(false);
-        await handlePracticeResult(data, itemData, currentAttempt, activeSessionId, itemIndex);
-      } catch (error) {
-        console.error("Polling error:", error);
-        stopPolling();
-        setIsListening(false);
-        setToyPromptActive(false);
-        setStage("Polling failed");
-        setPageError(error.message || "Polling failed.");
-        setIsBusy(false);
-      }
-    }, POLL_INTERVAL_MS);
+    const response = await fetch(`${SERVER}/practice-audio`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      body: arrayBuffer,
+    });
+
+    return safeReadJson(response, "Failed to process audio.");
+  };
+
+  const getPracticeResult = async (taskKey) => {
+    return getJson(
+      `${SERVER}/practice-result?taskKey=${encodeURIComponent(taskKey || "")}`,
+      "Failed to get practice result."
+    );
+  };
+
+  const notifyPracticeStage = async (stageName, taskKey) => {
+    try {
+      await postJson(`${SERVER}/practice-stage`, { stage: stageName, taskKey }, "Stage update failed.");
+    } catch (error) {
+      console.error("Stage notify error:", error);
+    }
   };
 
   const handlePracticeResult = async (
@@ -649,7 +879,11 @@ const DevicePage = () => {
     setLatestResult(resultData);
     setStage("Result received");
 
-    await saveAttempt(resultData, itemData, currentAttempt, activeSessionId);
+    await saveAttempt(resultData, itemData, currentAttempt, activeSessionId, itemIndex);
+
+    if (resultData.feedback) {
+      speakText(resultData.feedback);
+    }
 
     let updatedProgress = null;
 
@@ -658,23 +892,22 @@ const DevicePage = () => {
 
       if (resultData.moveNext) {
         next.attemptedItems += 1;
-        if (resultData.matchStatus === "exact") next.exact += 1;
-        else if (resultData.matchStatus === "close") next.close += 1;
-        else if (resultData.matchStatus === "partial") next.partial += 1;
-        else next.incorrect += 1;
+        next.completedItems += 1;
+        next.totalInitial += Number(resultData?.phonemePositionScores?.initial || 0);
+        next.totalMiddle += Number(resultData?.phonemePositionScores?.middle || 0);
+        next.totalEnd += Number(resultData?.phonemePositionScores?.end || 0);
       }
 
-      next.overallScore =
-        next.attemptedItems > 0
-          ? Math.round(
-              ((next.exact * 100 +
-                next.close * 80 +
-                next.partial * 50 +
-                next.incorrect * 20) /
-                (next.attemptedItems * 100)) *
-                100
-            )
-          : 0;
+      next.initialAverage =
+        next.completedItems > 0 ? Math.round(next.totalInitial / next.completedItems) : 0;
+      next.middleAverage =
+        next.completedItems > 0 ? Math.round(next.totalMiddle / next.completedItems) : 0;
+      next.endAverage =
+        next.completedItems > 0 ? Math.round(next.totalEnd / next.completedItems) : 0;
+
+      next.overallScore = Math.round(
+        (next.initialAverage + next.middleAverage + next.endAverage) / 3
+      );
 
       updatedProgress = next;
       return next;
@@ -687,11 +920,13 @@ const DevicePage = () => {
     if (resultData.shouldRetry && currentAttempt < MAX_ATTEMPTS) {
       const nextAttempt = currentAttempt + 1;
       setAttempt(nextAttempt);
-      setStage(`Try again ${nextAttempt}/${MAX_ATTEMPTS}`);
+      setIsBusy(false);
 
       setTimeout(() => {
-        triggerPractice(itemData, nextAttempt, itemIndex);
-      }, 3200);
+        if (isMountedRef.current && !sessionPaused && !sessionCompleted) {
+          runCurrentItem(itemData, nextAttempt, itemIndex, activeSessionId);
+        }
+      }, 1600);
 
       return;
     }
@@ -699,25 +934,179 @@ const DevicePage = () => {
     setAttempt(1);
 
     const nextIndex = itemIndex + 1;
+    const reachedHundred =
+      updatedProgress &&
+      items.length > 0 &&
+      updatedProgress.completedItems >= items.length;
+
+    if (reachedHundred) {
+      await finishTherapySession(activeSessionId, updatedProgress);
+      return;
+    }
 
     if (nextIndex < items.length) {
       setStage("Moving to next item...");
 
       setTimeout(() => {
+        if (!isMountedRef.current) return;
+
         setLatestResult(null);
         setPageError("");
         setCurrentIndex(nextIndex);
         setIsBusy(false);
 
         const nextItem = items[nextIndex];
-        if (nextItem) {
+        if (nextItem && !sessionPaused && !sessionCompleted) {
           setTimeout(() => {
-            triggerPractice(nextItem, 1, nextIndex);
-          }, 1400);
+            runCurrentItem(nextItem, 1, nextIndex, activeSessionId);
+          }, 800);
         }
       }, 1800);
     } else if (updatedProgress) {
       await finishTherapySession(activeSessionId, updatedProgress);
+    }
+  };
+
+  const uploadAttemptAudio = async (
+    audioBlob,
+    itemData,
+    currentAttempt,
+    activeSessionId,
+    itemIndex,
+    taskKey
+  ) => {
+    try {
+      setIsUploading(true);
+      setStage("Checking response...");
+
+      await notifyPracticeStage("processing-whisper", taskKey);
+
+      const audioResult = await sendPracticeAudioToBackend(audioBlob);
+
+      let finalResult = audioResult;
+
+      if (!audioResult?.ready && taskKey) {
+        finalResult = await getPracticeResult(taskKey);
+      }
+
+      setIsUploading(false);
+
+      const simulatedScores = generateRandomPhonemeScores();
+      const passed = simulatedScores.total >= SUCCESS_THRESHOLD;
+
+      const normalizedResult = {
+        success: !!finalResult?.ready || !!finalResult?.success,
+        recognizedText: finalResult?.recognizedText || "",
+        targetText: finalResult?.targetText || itemData?.text || "",
+        score: simulatedScores.total,
+        phonemePositionScores: {
+          initial: simulatedScores.initial,
+          middle: simulatedScores.middle,
+          end: simulatedScores.end,
+        },
+        feedback: buildSimulationFeedback(simulatedScores.total, currentAttempt),
+        shouldRetry: !passed && currentAttempt < MAX_ATTEMPTS,
+        moveNext: passed || currentAttempt >= MAX_ATTEMPTS,
+        time: finalResult?.time || new Date().toISOString(),
+        scoringMode: "simulated_initial_middle_end",
+      };
+
+      await handlePracticeResult(
+        normalizedResult,
+        itemData,
+        currentAttempt,
+        activeSessionId,
+        itemIndex
+      );
+    } catch (error) {
+      console.error("Upload failed:", error);
+      setIsUploading(false);
+      setIsBusy(false);
+      setStage("Upload failed");
+      setPageError(error.message || "Failed to upload and process audio.");
+    }
+  };
+
+  const runCurrentItem = async (
+    itemData,
+    currentAttempt,
+    itemIndex,
+    activeSessionIdFromCaller = ""
+  ) => {
+    try {
+      if (!itemData?.text?.trim()) {
+        throw new Error("Current item text is missing.");
+      }
+
+      if (!itemData?.audioUrl) {
+        throw new Error(`Audio is missing for item: ${itemData?.text || "unknown item"}`);
+      }
+
+      if (sessionPaused || sessionCompleted) return;
+
+      setIsBusy(true);
+      setPageError("");
+      setLatestResult(null);
+      setStage("Preparing item...");
+
+      const activeSessionId = activeSessionIdFromCaller || (await createSession());
+
+      const createdTask = await triggerPracticeTask(
+        itemData,
+        currentAttempt,
+        activeSessionId,
+        itemIndex
+      );
+      const taskKey = createdTask?.taskKey || "";
+
+      const promptAudioUrl = getItemPromptAudioUrl(itemData);
+
+      setStage("Playing prompt...");
+      await notifyPracticeStage("playing-prompt", taskKey);
+      await playAudioUrl(promptAudioUrl);
+
+      if (sessionPaused || sessionCompleted) {
+        setIsBusy(false);
+        return;
+      }
+
+      setStage("Get ready...");
+      await new Promise((resolve) =>
+        setTimeout(resolve, Number(itemData?.promptDelayMs || 700))
+      );
+
+      if (sessionPaused || sessionCompleted) {
+        setIsBusy(false);
+        return;
+      }
+
+      setStage("Listening...");
+      await notifyPracticeStage("listening", taskKey);
+      const audioBlob = await startLaptopRecording();
+
+      if (sessionPaused || sessionCompleted) {
+        setIsBusy(false);
+        return;
+      }
+
+      await uploadAttemptAudio(
+        audioBlob,
+        itemData,
+        currentAttempt,
+        activeSessionId,
+        itemIndex,
+        taskKey
+      );
+    } catch (error) {
+      console.error("Run item error:", error);
+      console.error("Failing item:", itemData);
+
+      setIsBusy(false);
+      setIsListening(false);
+      setIsUploading(false);
+      setIsPromptPlaying(false);
+      setStage("Item failed");
+      setPageError(error.message || "Failed to run current item.");
     }
   };
 
@@ -727,10 +1116,16 @@ const DevicePage = () => {
     setSessionPaused(false);
     setIsBusy(false);
     setIsListening(false);
-    setToyPromptActive(false);
-    setStage("Session completed");
+    setIsUploading(false);
+    setIsPromptPlaying(false);
+    setStage("Session completed - switching to companion mode soon");
+
     stopTimer();
-    stopPolling();
+    stopCurrentAudio();
+    cleanupRecorder();
+    stopSpeech();
+
+    speakText("Excellent. Session completed. Moving to companion mode.");
 
     await updateSessionSummary(activeSessionId, finalProgress, true);
     await updateDailyUsage(child, finalProgress);
@@ -744,36 +1139,46 @@ const DevicePage = () => {
         levelId: levelInfo?.id || "",
         levelTitle: levelInfo?.title || "",
         sessionMode: "therapy",
+        sessionSource: "laptop",
         totalItems: items.length,
         attemptedItems: finalProgress.attemptedItems,
-        exactCount: finalProgress.exact,
-        closeCount: finalProgress.close,
-        partialCount: finalProgress.partial,
-        incorrectCount: finalProgress.incorrect,
+        completedItems: finalProgress.completedItems,
         overallScore: finalProgress.overallScore,
+        initialAverage: finalProgress.initialAverage,
+        middleAverage: finalProgress.middleAverage,
+        endAverage: finalProgress.endAverage,
         createdAt: serverTimestamp(),
         elapsedSeconds,
+        scoringMode: "simulated_initial_middle_end",
       });
     } catch (error) {
       console.error("Summary save error:", error);
     }
 
-    try {
-      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
-    } catch (error) {
-      console.error("Practice reset after finish error:", error);
-    }
+    clearCompanionTimeout();
+    companionTimeoutRef.current = setTimeout(async () => {
+      try {
+        await stopCompanionMode();
+      } catch (error) {
+        console.error("Stop companion before restart error:", error);
+      }
 
-    setTimeout(async () => {
       setSelectedMode("companion");
       setCompanionActive(false);
-      setStage("Returning to companion mode...");
-    }, 1000);
+      setLatestResult(null);
+      setCurrentIndex(0);
+      setAttempt(1);
+      setStage("Companion mode active");
+
+      await activateCompanionMode();
+    }, SESSION_END_TO_COMPANION_DELAY_MS);
   };
 
   const beginTherapySession = async () => {
     setPageError("");
     setSessionBlocked(false);
+    clearCompanionTimeout();
+    stopSpeech();
 
     const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
     setTherapyModeAllowed(therapyAccess.allowed);
@@ -805,11 +1210,14 @@ const DevicePage = () => {
     setSessionId("");
     setProgress({
       attemptedItems: 0,
-      exact: 0,
-      close: 0,
-      partial: 0,
-      incorrect: 0,
+      completedItems: 0,
       overallScore: 0,
+      initialAverage: 0,
+      middleAverage: 0,
+      endAverage: 0,
+      totalInitial: 0,
+      totalMiddle: 0,
+      totalEnd: 0,
     });
     setLatestResult(null);
     setStage("Therapy session started");
@@ -818,27 +1226,24 @@ const DevicePage = () => {
     const firstItem = items[0];
     if (firstItem) {
       setTimeout(() => {
-        triggerPractice(firstItem, 1, 0);
-      }, 600);
+        runCurrentItem(firstItem, 1, 0);
+      }, 500);
     }
   };
 
   const pauseSession = async () => {
     if (!sessionStarted || sessionCompleted || sessionPaused) return;
 
-    stopPolling();
     stopTimer();
-
-    try {
-      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
-    } catch (error) {
-      console.error("Practice reset on pause error:", error);
-    }
+    stopCurrentAudio();
+    cleanupRecorder();
+    stopSpeech();
 
     setSessionPaused(true);
     setIsBusy(false);
     setIsListening(false);
-    setToyPromptActive(false);
+    setIsUploading(false);
+    setIsPromptPlaying(false);
     setStage("Session paused");
   };
 
@@ -850,15 +1255,25 @@ const DevicePage = () => {
     setStage("Session resumed");
 
     if (currentItem) {
-      setTimeout(() => {
-        triggerPractice(currentItem, attempt || 1, currentIndex);
-      }, 800);
+      setTimeout(async () => {
+        const activeSessionId = await createSession();
+        runCurrentItem(currentItem, attempt || 1, currentIndex, activeSessionId);
+      }, 700);
     }
   };
 
   const endSession = async () => {
-    stopPolling();
     stopTimer();
+    stopCurrentAudio();
+    cleanupRecorder();
+    stopSpeech();
+    clearCompanionTimeout();
+
+    try {
+      await postJson(`${SERVER}/practice-reset`, {}, "Failed to reset practice state.");
+    } catch (error) {
+      console.error("Practice reset error:", error);
+    }
 
     if (!sessionId) {
       setSessionStarted(false);
@@ -866,17 +1281,11 @@ const DevicePage = () => {
       setSessionPaused(false);
       setIsBusy(false);
       setIsListening(false);
-      setToyPromptActive(false);
+      setIsUploading(false);
+      setIsPromptPlaying(false);
       setStage("Session ended");
       setSelectedMode("companion");
       setCompanionActive(false);
-
-      try {
-        await fetch(`${SERVER}/practice-reset`, { method: "POST" });
-      } catch (error) {
-        console.error("Practice reset after manual end error:", error);
-      }
-
       return;
     }
 
@@ -885,11 +1294,14 @@ const DevicePage = () => {
   };
 
   const restartAll = async () => {
-    stopPolling();
     stopTimer();
+    stopCurrentAudio();
+    cleanupRecorder();
+    stopSpeech();
+    clearCompanionTimeout();
 
     try {
-      await fetch(`${SERVER}/practice-reset`, { method: "POST" });
+      await postJson(`${SERVER}/practice-reset`, {}, "Failed to reset practice state.");
     } catch (error) {
       console.error("Practice reset error:", error);
     }
@@ -907,15 +1319,19 @@ const DevicePage = () => {
     setLatestResult(null);
     setIsBusy(false);
     setIsListening(false);
-    setToyPromptActive(false);
+    setIsUploading(false);
+    setIsPromptPlaying(false);
     setElapsedSeconds(0);
     setProgress({
       attemptedItems: 0,
-      exact: 0,
-      close: 0,
-      partial: 0,
-      incorrect: 0,
+      completedItems: 0,
       overallScore: 0,
+      initialAverage: 0,
+      middleAverage: 0,
+      endAverage: 0,
+      totalInitial: 0,
+      totalMiddle: 0,
+      totalEnd: 0,
     });
     setPageError("");
     setSelectedMode("companion");
@@ -924,6 +1340,40 @@ const DevicePage = () => {
     const therapyAccess = await evaluateTherapyAvailability(child, therapyPlanData);
     setTherapyModeAllowed(therapyAccess.allowed);
     setTherapyRestrictionMessage(therapyAccess.reason || "");
+  };
+
+  const renderMedia = () => {
+    if (!currentItem) {
+      return <div className="image-placeholder">No item found</div>;
+    }
+
+    const mediaUrl = getItemMediaUrl(currentItem);
+
+    if (!mediaUrl) {
+      return <div className="image-placeholder">No media available</div>;
+    }
+
+    if (currentItem.visualType === "video") {
+      return (
+        <video
+          src={mediaUrl}
+          className="item-image"
+          autoPlay
+          muted
+          loop
+          playsInline
+          controls
+        />
+      );
+    }
+
+    return (
+      <img
+        src={mediaUrl}
+        alt={currentItem.text || "practice item"}
+        className="item-image"
+      />
+    );
   };
 
   if (loading) {
@@ -963,7 +1413,7 @@ const DevicePage = () => {
                 ? formatTime(elapsedSeconds)
                 : companionActive
                 ? "Active"
-                : "Starting"}
+                : "Ready"}
             </strong>
           </div>
         </div>
@@ -990,8 +1440,8 @@ const DevicePage = () => {
                 <h1>Speech Practice Device</h1>
                 <p>
                   {selectedMode === "therapy"
-                    ? "A guided smart therapy experience is running automatically."
-                    : "The device is in companion mode and listening for keywords."}
+                    ? "A guided laptop-based stimulation therapy session is running."
+                    : "The device is in companion mode."}
                 </p>
               </div>
             </div>
@@ -1011,33 +1461,35 @@ const DevicePage = () => {
 
                 {selectedMode === "therapy" ? (
                   <>
-                    <div className="image-frame">
-                      {currentItem?.imageUrl ? (
-                        <img
-                          src={currentItem.imageUrl}
-                          alt={currentItem.text || "practice item"}
-                          className="item-image"
-                        />
-                      ) : (
-                        <div className="image-placeholder">No image available</div>
-                      )}
-                    </div>
+                    <div className="image-frame">{renderMedia()}</div>
 
                     <div className="word-area">
                       <h2>{currentItem?.text || "No item found"}</h2>
                       <p>{friendlyFeedback}</p>
+                      <p>
+                        Progress: {progress.completedItems}/{items.length} items completed
+                      </p>
                     </div>
 
                     <div className="live-status-box">
                       <span>Live Status</span>
                       <strong>
-                        {isListening
-                          ? "Listening..."
-                          : toyPromptActive
+                        {isPromptPlaying
                           ? "Playing prompt..."
+                          : isListening
+                          ? "Listening..."
+                          : isUploading
+                          ? "Checking response..."
                           : stage}
                       </strong>
                     </div>
+
+                    {latestResult && (
+                      <div className="live-status-box">
+                        <span>Recognized</span>
+                        <strong>{latestResult.recognizedText || "No speech detected"}</strong>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="companion-center-card">
@@ -1126,14 +1578,14 @@ const DevicePage = () => {
                     </div>
 
                     <p>
-                      {progress.attemptedItems} of {items.length} items attempted
+                      {progress.completedItems} of {items.length} items completed
                     </p>
                   </div>
 
                   <div className="side-panel-card highlight">
                     <span className="side-label">Overall Progress</span>
                     <strong className="overall-score">{progress.overallScore}%</strong>
-                    <p>Overall therapy progress based on completed practice items.</p>
+                    <p>Stored for therapist reporting.</p>
                   </div>
 
                   <div className="side-panel-card">
@@ -1162,6 +1614,28 @@ const DevicePage = () => {
                       <div>
                         <small>Mode</small>
                         <strong>{selectedMode}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="side-panel-card">
+                    <span className="side-label">Position Scores</span>
+                    <div className="status-grid">
+                      <div>
+                        <small>Initial</small>
+                        <strong>{progress.initialAverage}%</strong>
+                      </div>
+                      <div>
+                        <small>Middle</small>
+                        <strong>{progress.middleAverage}%</strong>
+                      </div>
+                      <div>
+                        <small>End</small>
+                        <strong>{progress.endAverage}%</strong>
+                      </div>
+                      <div>
+                        <small>Saved</small>
+                        <strong>Yes</strong>
                       </div>
                     </div>
                   </div>

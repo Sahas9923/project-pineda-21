@@ -646,3 +646,24 @@
     grid-template-columns: 1fr;
   }
 }
+
+.level-extra-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e7eef6;
+  color: #58708b;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.item-review-head,
+.item-review-row.item-review-row-7 {
+  grid-template-columns: 1.3fr 0.8fr 1fr 0.8fr 0.8fr 0.9fr 1.2fr;
+}
+
+@media (max-width: 920px) {
+  .item-review-head,
+  .item-review-row.item-review-row-7 {
+    min-width: 980px;
+  }
+}

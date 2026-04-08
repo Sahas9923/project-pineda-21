@@ -17,6 +17,19 @@ import {
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
+const getDiagnosisLabel = (value) => {
+  switch (value) {
+    case "autism":
+      return "Autism";
+    case "down_syndrome":
+      return "Down Syndrome";
+    case "general":
+      return "General";
+    default:
+      return "Not added yet";
+  }
+};
+
 const ChildInfo = () => {
   const navigate = useNavigate();
 
@@ -138,6 +151,8 @@ const ChildInfo = () => {
       const children = snapshot.docs.map((childDoc) => ({
         id: childDoc.id,
         ...childDoc.data(),
+        diagnosisCategory: childDoc.data().diagnosisCategory || "",
+        diagnosisNotes: childDoc.data().diagnosisNotes || "",
         parentName: childDoc.data().parentName || parentData.name || "Parent",
         parentEmail:
           childDoc.data().parentEmail || parentData.email || user.email || "",
@@ -239,103 +254,102 @@ const ChildInfo = () => {
   };
 
   const handleViewChild = async (child) => {
-  try {
-    setSelectedChild(child);
+    try {
+      setSelectedChild(child);
 
-    // GET CHILD SESSIONS FROM TOP-LEVEL "sessions" COLLECTION
-    const sessionsQuery = query(
-      collection(db, "sessions"),
-      where("childId", "==", child.id)
-    );
-
-    const sessionsSnapshot = await getDocs(sessionsQuery);
-
-    const sessions = sessionsSnapshot.docs.map((sessionDoc) => ({
-      id: sessionDoc.id,
-      ...sessionDoc.data(),
-    }));
-
-    const sortedSessions = [...sessions].sort((a, b) => {
-      const aTime = a.startedAt?.seconds || 0;
-      const bTime = b.startedAt?.seconds || 0;
-      return aTime - bTime;
-    });
-
-    let progressPayload = null;
-
-    if (sortedSessions.length > 0) {
-      const totalScore = sortedSessions.reduce(
-        (sum, session) => sum + Number(session.overallScore || 0),
-        0
+      const sessionsQuery = query(
+        collection(db, "sessions"),
+        where("childId", "==", child.id)
       );
 
-      const avgProgress = Math.round(totalScore / sortedSessions.length);
-      const latestSession = sortedSessions[sortedSessions.length - 1];
+      const sessionsSnapshot = await getDocs(sessionsQuery);
 
-      const totalCompletedItems = sortedSessions.reduce(
-        (sum, session) => sum + Number(session.attemptedItems || 0),
-        0
+      const sessions = sessionsSnapshot.docs.map((sessionDoc) => ({
+        id: sessionDoc.id,
+        ...sessionDoc.data(),
+      }));
+
+      const sortedSessions = [...sessions].sort((a, b) => {
+        const aTime = a.startedAt?.seconds || 0;
+        const bTime = b.startedAt?.seconds || 0;
+        return aTime - bTime;
+      });
+
+      let progressPayload = null;
+
+      if (sortedSessions.length > 0) {
+        const totalScore = sortedSessions.reduce(
+          (sum, session) => sum + Number(session.overallScore || 0),
+          0
+        );
+
+        const avgProgress = Math.round(totalScore / sortedSessions.length);
+        const latestSession = sortedSessions[sortedSessions.length - 1];
+
+        const totalCompletedItems = sortedSessions.reduce(
+          (sum, session) => sum + Number(session.attemptedItems || 0),
+          0
+        );
+
+        const totalItems = sortedSessions.reduce(
+          (sum, session) =>
+            sum +
+            Number(
+              session.totalItems ||
+                session.totalLevelItems ||
+                session.assignedItemsCount ||
+                session.attemptedItems ||
+                0
+            ),
+          0
+        );
+
+        progressPayload = {
+          overallProgress: avgProgress,
+          currentMode:
+            latestSession.sessionMode ||
+            latestSession.mode ||
+            latestSession.currentMode ||
+            "Therapy",
+          totalCompletedItems,
+          totalItems,
+        };
+      }
+
+      setReportData(progressPayload);
+
+      const timelineSnap = await getDocs(
+        collection(db, "children", child.id, "timeline")
       );
 
-      const totalItems = sortedSessions.reduce(
-        (sum, session) =>
-          sum +
-          Number(
-            session.totalItems ||
-              session.totalLevelItems ||
-              session.assignedItemsCount ||
-              session.attemptedItems ||
-              0
-          ),
-        0
-      );
+      const timelineData = timelineSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => {
+          const aTime = a.createdAt?.seconds || 0;
+          const bTime = b.createdAt?.seconds || 0;
+          return bTime - aTime;
+        })
+        .slice(0, 5);
 
-      progressPayload = {
-        overallProgress: avgProgress,
-        currentMode:
-          latestSession.sessionMode ||
-          latestSession.mode ||
-          latestSession.currentMode ||
-          "Therapy",
-        totalCompletedItems,
-        totalItems,
-      };
+      setRecentTimeline(timelineData);
+
+      await fetchLatestTherapistProfile(child.therapistUid, child);
+
+      setEditChildForm({
+        childName: child.childName || "",
+        age: child.age || "",
+        gender: child.gender || "",
+      });
+
+      setEditChildImagePreview(child.childImageUrl || "");
+      setEditChildImageFile(null);
+      setEditingChild(false);
+      setShowDetailsModal(true);
+    } catch (error) {
+      console.error("Error loading child details:", error);
+      showMessage("❌ Failed to load child details.");
     }
-
-    setReportData(progressPayload);
-
-    const timelineSnap = await getDocs(
-      collection(db, "children", child.id, "timeline")
-    );
-
-    const timelineData = timelineSnap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => {
-        const aTime = a.createdAt?.seconds || 0;
-        const bTime = b.createdAt?.seconds || 0;
-        return bTime - aTime;
-      })
-      .slice(0, 5);
-
-    setRecentTimeline(timelineData);
-
-    await fetchLatestTherapistProfile(child.therapistUid, child);
-
-    setEditChildForm({
-      childName: child.childName || "",
-      age: child.age || "",
-      gender: child.gender || "",
-    });
-
-    setEditChildImagePreview(child.childImageUrl || "");
-    setEditChildImageFile(null);
-    setEditingChild(false);
-    setShowDetailsModal(true);
-  } catch (error) {
-    console.error("Error loading child details:", error);
-    showMessage("❌ Failed to load child details.");
-  }
-};
+  };
 
   const handleChildFormChange = (e) => {
     const { name, value } = e.target;
@@ -432,6 +446,9 @@ const ChildInfo = () => {
         therapistContact: "",
         therapistId: "",
         therapistImageUrl: "",
+
+        diagnosisCategory: "",
+        diagnosisNotes: "",
 
         assignedLevelId: "",
         assignedLevelName: "",
@@ -568,124 +585,178 @@ const ChildInfo = () => {
   };
 
   const checkDeviceAccessRules = async (child) => {
-    if (!child) {
-      return { allowed: false, reason: "Child not selected." };
-    }
+  if (!child) {
+    return { allowed: false, reason: "Child not selected." };
+  }
 
-    if (!child.deviceAssigned) {
-      return {
-        allowed: false,
-        reason: "No device is assigned to this child.",
-      };
-    }
+  let latestChild = { ...child };
+  let childDeviceData = null;
 
-    if (!child.deviceId && !child.deviceCode) {
-      return {
-        allowed: false,
-        reason: "Assigned device information is incomplete.",
-      };
-    }
-
-    if (
-      child.deviceStatus &&
-      !["Assigned", "Active", "Ready"].includes(child.deviceStatus)
-    ) {
-      return {
-        allowed: false,
-        reason: `Device cannot be opened because status is ${child.deviceStatus}.`,
-      };
-    }
-
-    if (!child.therapistUid) {
-      return {
-        allowed: false,
-        reason: "A therapist must be assigned before opening the device.",
-      };
-    }
-
-    if (!child.assignedLevelId && !child.assignedLevelName) {
-      return {
-        allowed: false,
-        reason: "A therapy level must be assigned before opening the device.",
-      };
-    }
-
-    const planSnap = await getDoc(doc(db, "therapyPlans", child.id));
-    const latestPlan = planSnap.exists() ? planSnap.data() : null;
-
-    if (!latestPlan) {
-      return {
-        allowed: false,
-        reason: "No therapy plan found for this child.",
-      };
-    }
-
-    const maxSessionsPerDay = Number(latestPlan.maxSessionsPerDay || 0);
-    const lockTherapyAfterLimit = !!latestPlan.lockTherapyAfterLimit;
-    const fallbackMode = latestPlan.fallbackMode || "companion";
-
-    const todaySessionCount = await getTodaySessionCount(child);
-
-    if (
-      maxSessionsPerDay > 0 &&
-      todaySessionCount >= maxSessionsPerDay &&
-      lockTherapyAfterLimit
-    ) {
-      return {
-        allowed: false,
-        reason: `Daily therapy limit reached. Allowed sessions: ${maxSessionsPerDay}. Fallback mode: ${fallbackMode}.`,
-      };
-    }
-
-    const inAllowedTime = isWithinTherapyTime(
-      latestPlan.therapyStartTime,
-      latestPlan.therapyEndTime
+  try {
+    const childDeviceSnap = await getDoc(
+      doc(db, "children", child.id, "device", "current")
     );
 
-    if (!inAllowedTime) {
-      return {
-        allowed: false,
-        reason: `Device can only be opened during therapy time (${latestPlan.therapyStartTime || "--"} - ${latestPlan.therapyEndTime || "--"}).`,
+    if (childDeviceSnap.exists()) {
+      childDeviceData = childDeviceSnap.data();
+
+      latestChild = {
+        ...latestChild,
+        deviceAssigned: true,
+        deviceId:
+          latestChild.deviceId ||
+          childDeviceData.deviceId ||
+          childDeviceData.deviceCode ||
+          "",
+        deviceCode:
+          latestChild.deviceCode ||
+          childDeviceData.deviceCode ||
+          childDeviceData.deviceId ||
+          "",
+        deviceName:
+          latestChild.deviceName || childDeviceData.deviceName || "",
+        deviceStatus:
+          latestChild.deviceStatus || childDeviceData.deviceStatus || "Assigned",
       };
     }
+  } catch (error) {
+    console.error("Error reading child device path:", error);
+  }
 
+  if (
+    !latestChild.deviceAssigned &&
+    !latestChild.deviceId &&
+    !latestChild.deviceCode
+  ) {
     return {
-      allowed: true,
-      reason: "Device access granted.",
-      therapyPlanData: latestPlan,
-      todaySessionCount,
+      allowed: false,
+      reason: "No device is assigned to this child.",
     };
+  }
+
+  if (!latestChild.deviceId && !latestChild.deviceCode) {
+    return {
+      allowed: false,
+      reason: "Assigned device information is incomplete.",
+    };
+  }
+
+  if (
+    latestChild.deviceStatus &&
+    !["Assigned", "Active", "Ready"].includes(latestChild.deviceStatus)
+  ) {
+    return {
+      allowed: false,
+      reason: `Device cannot be opened because status is ${latestChild.deviceStatus}.`,
+    };
+  }
+
+  if (!latestChild.therapistUid) {
+    return {
+      allowed: false,
+      reason: "A therapist must be assigned before opening the device.",
+    };
+  }
+
+  if (!latestChild.assignedLevelId && !latestChild.assignedLevelName) {
+    return {
+      allowed: false,
+      reason: "A therapy level must be assigned before opening the device.",
+    };
+  }
+
+  const planSnap = await getDoc(doc(db, "therapyPlans", child.id));
+  const latestPlan = planSnap.exists() ? planSnap.data() : null;
+
+  if (!latestPlan) {
+    return {
+      allowed: false,
+      reason: "No therapy plan found for this child.",
+    };
+  }
+
+  const maxSessionsPerDay = Number(latestPlan.maxSessionsPerDay || 0);
+  const lockTherapyAfterLimit = !!latestPlan.lockTherapyAfterLimit;
+  const fallbackMode = latestPlan.fallbackMode || "companion";
+
+  const todaySessionCount = await getTodaySessionCount(latestChild);
+
+  if (
+    maxSessionsPerDay > 0 &&
+    todaySessionCount >= maxSessionsPerDay &&
+    lockTherapyAfterLimit
+  ) {
+    return {
+      allowed: false,
+      reason: `Daily therapy limit reached. Allowed sessions: ${maxSessionsPerDay}. Fallback mode: ${fallbackMode}.`,
+    };
+  }
+
+  const inAllowedTime = isWithinTherapyTime(
+    latestPlan.therapyStartTime,
+    latestPlan.therapyEndTime
+  );
+
+  if (!inAllowedTime) {
+    return {
+      allowed: false,
+      reason: `Device can only be opened during therapy time (${latestPlan.therapyStartTime || "--"} - ${latestPlan.therapyEndTime || "--"}).`,
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "Device access granted.",
+    therapyPlanData: latestPlan,
+    todaySessionCount,
+    latestChild,
   };
+};
 
   const handleOpenDevice = async (child) => {
-    try {
-      const result = await checkDeviceAccessRules(child);
+  try {
+    const latestChildSnap = await getDoc(doc(db, "children", child.id));
 
-      if (!result.allowed) {
-        showMessage(`⚠️ ${result.reason}`);
-        return;
-      }
-
-      showMessage("✅ Opening assigned device...");
-
-      navigate(`/parent/device/${child.deviceId || child.deviceCode}`, {
-        state: {
-          childId: child.id,
-          childName: child.childName,
-          childCode: child.childCode,
-          deviceId: child.deviceId || child.deviceCode,
-          deviceCode: child.deviceCode || child.deviceId,
-          deviceName: child.deviceName || "Assigned Device",
-          therapistUid: child.therapistUid || "",
-          assignedLevelId: child.assignedLevelId || "",
-          therapyPlan: result.therapyPlanData || null,
-        },
-      });
-    } catch (error) {
-      console.error("Error opening device:", error);
-      showMessage("❌ Failed to open assigned device.");
+    if (!latestChildSnap.exists()) {
+      showMessage("❌ Child record not found.");
+      return;
     }
-  };
+
+    const latestChild = {
+      id: latestChildSnap.id,
+      ...latestChildSnap.data(),
+    };
+
+    const result = await checkDeviceAccessRules(latestChild);
+
+    if (!result.allowed) {
+      showMessage(`⚠️ ${result.reason}`);
+      return;
+    }
+
+    const finalChild = result.latestChild || latestChild;
+
+    showMessage("✅ Opening assigned device...");
+
+    navigate(`/parent/device/${finalChild.deviceId || finalChild.deviceCode}`, {
+      state: {
+        childId: finalChild.id,
+        childName: finalChild.childName,
+        childCode: finalChild.childCode,
+        deviceId: finalChild.deviceId || finalChild.deviceCode,
+        deviceCode: finalChild.deviceCode || finalChild.deviceId,
+        deviceName: finalChild.deviceName || "Assigned Device",
+        therapistUid: finalChild.therapistUid || "",
+        assignedLevelId: finalChild.assignedLevelId || "",
+        therapyPlan: result.therapyPlanData || null,
+      },
+    });
+  } catch (error) {
+    console.error("Error opening device:", error);
+    showMessage("❌ Failed to open assigned device.");
+  }
+};
+
 
   const formatDate = (value) => {
     if (!value) return "No date";
@@ -844,6 +915,10 @@ const ChildInfo = () => {
                       <span>{child.age || "N/A"}</span>
                     </p>
                     <p>
+                      <strong>Diagnosis</strong>
+                      <span>{getDiagnosisLabel(child.diagnosisCategory)}</span>
+                    </p>
+                    <p>
                       <strong>Level</strong>
                       <span>{child.assignedLevelName || "Not assigned"}</span>
                     </p>
@@ -926,6 +1001,9 @@ const ChildInfo = () => {
                         <strong>Gender:</strong> {selectedChild.gender || "N/A"}
                       </p>
                       <p>
+                        <strong>Diagnosis:</strong> {getDiagnosisLabel(selectedChild.diagnosisCategory)}
+                      </p>
+                      <p>
                         <strong>Status:</strong> {selectedChild.status || "N/A"}
                       </p>
                     </div>
@@ -949,6 +1027,18 @@ const ChildInfo = () => {
                 </div>
 
                 <div className="details-grid">
+                  <div className="info-card">
+                    <h3>Diagnosis Details</h3>
+                    <p>
+                      <strong>Diagnosis Path:</strong>{" "}
+                      {getDiagnosisLabel(selectedChild.diagnosisCategory)}
+                    </p>
+                    <p>
+                      <strong>Therapist Notes:</strong>{" "}
+                      {selectedChild.diagnosisNotes || "No diagnosis notes added yet"}
+                    </p>
+                  </div>
+
                   <div className="info-card">
                     <h3>Assigned Level</h3>
                     <p>

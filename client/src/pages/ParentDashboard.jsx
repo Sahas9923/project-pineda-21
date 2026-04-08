@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import ParentNavbar from "../components/ParentNavbar";
 import "../styles/ParentDashboard.css";
 
@@ -45,6 +46,8 @@ const cityCoordinates = {
 };
 
 const ParentDashboard = () => {
+  const navigate = useNavigate();
+
   const [parentName, setParentName] = useState("Parent");
   const [childrenList, setChildrenList] = useState([]);
   const [therapists, setTherapists] = useState([]);
@@ -120,7 +123,10 @@ const ParentDashboard = () => {
       setLoading(true);
 
       const user = auth.currentUser;
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
       const parentRef = doc(db, "parents", user.uid);
       const parentSnap = await getDoc(parentRef);
@@ -162,8 +168,7 @@ const ParentDashboard = () => {
         })
       );
 
-      const filteredAssignedTherapists = therapistResults.filter(Boolean);
-      setTherapists(filteredAssignedTherapists);
+      setTherapists(therapistResults.filter(Boolean));
 
       await fetchAllTherapists();
     } catch (error) {
@@ -178,7 +183,7 @@ const ParentDashboard = () => {
     const childCount = childrenList.length;
 
     const assignedDeviceCount = childrenList.filter(
-      (child) => child.deviceAssigned
+      (child) => child.deviceAssigned || child.deviceId || child.deviceCode
     ).length;
 
     return {
@@ -206,39 +211,70 @@ const ParentDashboard = () => {
     <div className="parent-dashboard-page">
       <ParentNavbar />
 
+      <div className="parent-dashboard-background">
+        <div className="parent-dashboard-orb orb-one"></div>
+        <div className="parent-dashboard-orb orb-two"></div>
+        <div className="parent-dashboard-orb orb-three"></div>
+        <div className="parent-dashboard-grid"></div>
+      </div>
+
       <div className="parent-dashboard-container">
-        <section className="dashboard-hero">
-          <div className="hero-left">
-            <div className="hero-badge">🧸 Welcome to Pineda</div>
+        <section className="parent-hero-section">
+          <div className="parent-hero-card parent-hero-main">
+            <span className="parent-hero-badge">🧸 PINEDA Parent Workspace</span>
             <h1>Hello, {parentName}</h1>
             <p>
               Track your child’s therapy journey, connect with therapists, and
-              explore the people behind the Pineda platform in one modern parent
-              dashboard.
+              explore the team behind Pineda through a calm and modern parent
+              dashboard experience.
             </p>
 
-            <div className="hero-actions">
-              <button className="hero-btn primary-btn">View Child Info</button>
-              <button className="hero-btn secondary-btn">View Progress</button>
+            <div className="parent-hero-actions">
+              <button
+                className="parent-hero-btn parent-hero-btn-primary"
+                onClick={() => navigate("/child-info")}
+              >
+                View Child Info
+              </button>
+
+              <button
+                className="parent-hero-btn parent-hero-btn-secondary"
+                onClick={() => navigate("/parent-progress")}
+              >
+                View Progress
+              </button>
+            </div>
+
+            <div className="parent-inline-stats">
+              <div className="parent-inline-stat">
+                <span>Children</span>
+                <strong>{stats.childCount}</strong>
+              </div>
+              <div className="parent-inline-stat">
+                <span>Therapists</span>
+                <strong>{stats.therapistCount}</strong>
+              </div>
+              <div className="parent-inline-stat">
+                <span>Devices</span>
+                <strong>{stats.assignedDeviceCount}</strong>
+              </div>
             </div>
           </div>
 
-          <div className="hero-right">
-            <div className="hero-glass-card">
-              <h3>Pineda Mission</h3>
-              <p>
-                Pineda was created to make speech therapy more supportive,
-                engaging, and accessible for children, parents, and therapists
-                through thoughtful design and modern technology.
-              </p>
-            </div>
+          <div className="parent-hero-card parent-hero-side">
+            <h3>Pineda Mission</h3>
+            <p>
+              Pineda was created to make speech therapy more supportive,
+              engaging, and accessible for children, parents, and therapists
+              through thoughtful design and modern technology.
+            </p>
           </div>
         </section>
 
-        <section className="stats-strip-section">
-          <div className="stats-grid">
-            <div className="stat-card">
-              <div className="stat-icon">
+        <section className="parent-stats-section">
+          <div className="parent-stats-grid">
+            <div className="parent-stat-card">
+              <div className="parent-stat-icon">
                 <FaChild />
               </div>
               <div>
@@ -247,8 +283,8 @@ const ParentDashboard = () => {
               </div>
             </div>
 
-            <div className="stat-card">
-              <div className="stat-icon">
+            <div className="parent-stat-card">
+              <div className="parent-stat-icon">
                 <FaUserMd />
               </div>
               <div>
@@ -257,8 +293,8 @@ const ParentDashboard = () => {
               </div>
             </div>
 
-            <div className="stat-card">
-              <div className="stat-icon">
+            <div className="parent-stat-card">
+              <div className="parent-stat-icon">
                 <FaPuzzlePiece />
               </div>
               <div>
@@ -269,17 +305,17 @@ const ParentDashboard = () => {
           </div>
         </section>
 
-        <section className="dashboard-section">
-          <div className="section-head">
+        <section className="parent-dashboard-section">
+          <div className="parent-section-head">
             <h2>Therapist Network</h2>
             <p>
-              Explore all therapists registered with Pineda. Click a therapist
-              card below to view details and location on the map.
+              Explore all therapists registered with Pineda and select a card to
+              view therapist details and location on the map.
             </p>
           </div>
 
-          <div className="map-card">
-            <div className="map-wrapper">
+          <div className="parent-map-card">
+            <div className="parent-map-wrapper">
               <iframe
                 title="Therapist Network Map"
                 src={mapEmbedUrl}
@@ -293,39 +329,37 @@ const ParentDashboard = () => {
             </div>
 
             {allTherapists.length > 0 ? (
-              <div className="therapist-list-grid">
+              <div className="parent-therapist-grid">
                 {allTherapists.map((therapist) => (
                   <button
                     key={therapist.id}
                     type="button"
-                    className={`therapist-location-card ${
+                    className={`parent-therapist-card ${
                       selectedTherapist?.id === therapist.id ? "active" : ""
                     }`}
                     onClick={() => setSelectedTherapist(therapist)}
                   >
-                    <div className="therapist-card-top">
+                    <div className="parent-therapist-card-top">
                       <img
                         src={therapist.imageUrl || thiliniImg}
                         alt={therapist.name || "Therapist"}
-                        className="therapist-location-image"
+                        className="parent-therapist-image"
                       />
 
-                      <div className="therapist-location-content">
+                      <div className="parent-therapist-content">
                         <h4>{therapist.name || "Therapist"}</h4>
-                        <p>
-                          {therapist.specialization || "Speech Therapist"}
-                        </p>
+                        <p>{therapist.specialization || "Speech Therapist"}</p>
                         <span>
                           <FaMapMarkerAlt /> {therapist.city || "Colombo"}
                         </span>
                       </div>
                     </div>
 
-                    <div className="therapist-location-meta">
-                      <div className="meta-chip">
+                    <div className="parent-therapist-meta">
+                      <div className="parent-meta-chip">
                         {therapist.locationData?.placeName || "Location not added"}
                       </div>
-                      <div className="meta-subtext">
+                      <div className="parent-meta-subtext">
                         {therapist.locationData?.availableDays || "Days not set"}
                       </div>
                     </div>
@@ -333,15 +367,15 @@ const ParentDashboard = () => {
                 ))}
               </div>
             ) : (
-              <div className="map-empty-note">
+              <div className="parent-empty-note">
                 No therapist locations found yet.
               </div>
             )}
           </div>
         </section>
 
-        <section className="dashboard-section">
-          <div className="section-head">
+        <section className="parent-dashboard-section">
+          <div className="parent-section-head">
             <h2>About Pineda</h2>
             <p>
               Built with purpose to support children, families, and therapists
@@ -349,7 +383,7 @@ const ParentDashboard = () => {
             </p>
           </div>
 
-          <div className="about-project-card">
+          <div className="parent-about-card">
             <p>
               Pineda is an AI-supported speech therapy platform designed to make
               therapy interaction more engaging for children, more informative
@@ -359,15 +393,17 @@ const ParentDashboard = () => {
             </p>
           </div>
 
-          <div className="founders-grid">
-            <div className="founder-card">
+          <div className="parent-founders-grid">
+            <div className="parent-founder-card">
               <img
                 src={sahasImg}
                 alt="Sahas Suraweera"
-                className="founder-image"
+                className="parent-founder-image"
               />
-              <div className="founder-content">
-                <span className="founder-role">Co-Founder & Project Lead</span>
+              <div className="parent-founder-content">
+                <span className="parent-founder-role">
+                  Co-Founder & Project Lead
+                </span>
                 <h3>Sahas Suraweera</h3>
                 <p>
                   Sahas Suraweera leads the vision, planning, and overall system
@@ -379,14 +415,14 @@ const ParentDashboard = () => {
               </div>
             </div>
 
-            <div className="founder-card">
+            <div className="parent-founder-card">
               <img
                 src={thiliniImg}
                 alt="Thilini Piyumika"
-                className="founder-image"
+                className="parent-founder-image"
               />
-              <div className="founder-content">
-                <span className="founder-role">
+              <div className="parent-founder-content">
+                <span className="parent-founder-role">
                   Co-Founder & Design / Development Lead
                 </span>
                 <h3>Thilini Piyumika</h3>
@@ -405,60 +441,60 @@ const ParentDashboard = () => {
 
       {selectedTherapist && (
         <div
-          className="therapist-modal-overlay"
+          className="parent-modal-overlay"
           onClick={() => setSelectedTherapist(null)}
         >
           <div
-            className="therapist-modal"
+            className="parent-modal"
             onClick={(e) => e.stopPropagation()}
           >
             <button
-              className="modal-close-btn"
+              className="parent-modal-close"
               onClick={() => setSelectedTherapist(null)}
             >
               ✕
             </button>
 
-            <div className="modal-header">
+            <div className="parent-modal-header">
               <img
                 src={selectedTherapist.imageUrl || thiliniImg}
                 alt={selectedTherapist.name || "Therapist"}
-                className="modal-therapist-image"
+                className="parent-modal-image"
               />
 
               <div>
                 <h2>{selectedTherapist.name || "Therapist"}</h2>
-                <p className="modal-role">
+                <p className="parent-modal-role">
                   {selectedTherapist.specialization || "Speech Therapist"}
                 </p>
-                <p className="modal-city">
+                <p className="parent-modal-city">
                   <FaMapMarkerAlt /> {selectedTherapist.city || "City not set"}
                 </p>
               </div>
             </div>
 
-            <div className="modal-body">
+            <div className="parent-modal-body">
               <p>{selectedTherapist.description}</p>
 
-              <div className="modal-info-grid">
-                <div className="modal-info-item">
+              <div className="parent-modal-info-grid">
+                <div className="parent-modal-info-item">
                   <FaPhoneAlt />
                   <span>{selectedTherapist.contact || "No contact available"}</span>
                 </div>
 
-                <div className="modal-info-item">
+                <div className="parent-modal-info-item">
                   <FaEnvelope />
                   <span>{selectedTherapist.email || "No email available"}</span>
                 </div>
 
-                <div className="modal-info-item">
+                <div className="parent-modal-info-item">
                   <FaClock />
                   <span>
                     {selectedTherapist.locationData?.availableDays || "Days not set"}
                   </span>
                 </div>
 
-                <div className="modal-info-item">
+                <div className="parent-modal-info-item">
                   <FaClock />
                   <span>
                     {selectedTherapist.locationData?.availableTime || "Time not set"}
@@ -466,7 +502,7 @@ const ParentDashboard = () => {
                 </div>
               </div>
 
-              <div className="modal-extra-card">
+              <div className="parent-modal-location-card">
                 <h4>Primary Practice Location</h4>
                 <p>
                   {selectedTherapist.locationData?.placeName || "Not specified"}
@@ -477,36 +513,26 @@ const ParentDashboard = () => {
               </div>
 
               {selectedTherapist.locations?.length > 0 && (
-                <div className="all-locations-section">
+                <div className="parent-all-locations">
                   <h4>All Uploaded Locations</h4>
 
-                  <div className="all-locations-grid">
+                  <div className="parent-location-grid">
                     {selectedTherapist.locations.map((location) => (
-                      <div className="single-location-card" key={location.id}>
-                        <div className="single-location-head">
+                      <div className="parent-location-card" key={location.id}>
+                        <div className="parent-location-head">
                           <h5>{location.placeName || "Unnamed Place"}</h5>
                           {location.isPrimary && (
-                            <span className="primary-location-badge">
+                            <span className="parent-primary-badge">
                               Primary
                             </span>
                           )}
                         </div>
 
-                        <p>
-                          <strong>Address:</strong> {location.address || "N/A"}
-                        </p>
-                        <p>
-                          <strong>City:</strong> {location.city || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Contact:</strong> {location.contactNumber || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Days:</strong> {location.availableDays || "N/A"}
-                        </p>
-                        <p>
-                          <strong>Time:</strong> {location.availableTime || "N/A"}
-                        </p>
+                        <p><strong>Address:</strong> {location.address || "N/A"}</p>
+                        <p><strong>City:</strong> {location.city || "N/A"}</p>
+                        <p><strong>Contact:</strong> {location.contactNumber || "N/A"}</p>
+                        <p><strong>Days:</strong> {location.availableDays || "N/A"}</p>
+                        <p><strong>Time:</strong> {location.availableTime || "N/A"}</p>
                       </div>
                     ))}
                   </div>
@@ -518,8 +544,8 @@ const ParentDashboard = () => {
       )}
 
       {loading && (
-        <div className="dashboard-loading-overlay">
-          <div className="dashboard-loading-card">Loading dashboard...</div>
+        <div className="parent-loading-overlay">
+          <div className="parent-loading-card">Loading dashboard...</div>
         </div>
       )}
     </div>

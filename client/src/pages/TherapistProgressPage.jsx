@@ -7,20 +7,7 @@ import {
   getDocs,
   orderBy,
   query,
-  where,
 } from "firebase/firestore";
-
-const TherapistDashboard = () => {
-  return (
-    <div className="therapist-dashboard-page">
-      <TherapistNavbar />
-
-      <div className="therapist-dashboard-container">
-        {/* your existing therapist dashboard content here */}
-      </div>
-    </div>
-  );
-};
 
 const TherapistProgressPage = () => {
   const [loading, setLoading] = useState(true);
@@ -28,6 +15,7 @@ const TherapistProgressPage = () => {
 
   const [childrenList, setChildrenList] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [levels, setLevels] = useState([]);
 
   const [selectedChildId, setSelectedChildId] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("all");
@@ -41,25 +29,23 @@ const TherapistProgressPage = () => {
       setLoading(true);
       setPageError("");
 
-      const childrenSnap = await getDocs(collection(db, "children"));
+      const [childrenSnap, sessionsSnap, levelsSnap] = await Promise.all([
+        getDocs(collection(db, "children")),
+        getDocs(query(collection(db, "sessions"), orderBy("startedAt", "desc"))),
+        getDocs(collection(db, "levels")),
+      ]);
+
       const childRows = childrenSnap.docs.map((docSnap) => ({
         id: docSnap.id,
         ...docSnap.data(),
       }));
 
-      setChildrenList(childRows);
-
-      if (childRows.length > 0) {
-        setSelectedChildId(childRows[0].id);
-      }
-
-      const sessionQuery = query(
-        collection(db, "sessions"),
-        orderBy("startedAt", "desc")
-      );
-      const sessionsSnap = await getDocs(sessionQuery);
-
       const sessionRows = sessionsSnap.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      }));
+
+      const levelRows = levelsSnap.docs.map((docSnap) => ({
         id: docSnap.id,
         ...docSnap.data(),
       }));
@@ -69,7 +55,7 @@ const TherapistProgressPage = () => {
       for (const session of sessionRows) {
         try {
           const attemptsSnap = await getDocs(
-            query(collection(db, "sessions", session.id, "attempts"))
+            collection(db, "sessions", session.id, "attempts")
           );
 
           attemptsBySession[session.id] = attemptsSnap.docs.map((attemptDoc) => ({
@@ -81,12 +67,19 @@ const TherapistProgressPage = () => {
         }
       }
 
-      const merged = sessionRows.map((session) => ({
+      const mergedSessions = sessionRows.map((session) => ({
         ...session,
         attempts: attemptsBySession[session.id] || [],
       }));
 
-      setSessions(merged);
+      setChildrenList(childRows);
+      setSessions(mergedSessions);
+      setLevels(levelRows);
+
+      if (childRows.length > 0) {
+        setSelectedChildId(childRows[0].id);
+      }
+
       setLoading(false);
     } catch (error) {
       console.error("Therapist page load error:", error);
@@ -104,7 +97,7 @@ const TherapistProgressPage = () => {
 
     if (selectedLevel !== "all") {
       filtered = filtered.filter(
-        (session) => String(session.levelTitle || session.levelId || "") === selectedLevel
+        (session) => String(session.levelId || "") === String(selectedLevel)
       );
     }
 
@@ -112,60 +105,90 @@ const TherapistProgressPage = () => {
   }, [sessions, selectedChildId, selectedLevel]);
 
   const availableLevels = useMemo(() => {
-    const levelSet = new Set();
+    const levelMap = new Map();
 
     sessions
       .filter((session) => session.childId === selectedChildId)
       .forEach((session) => {
-        const levelName = String(session.levelTitle || session.levelId || "").trim();
-        if (levelName) levelSet.add(levelName);
+        if (session.levelId) {
+          levelMap.set(session.levelId, session.levelTitle || session.levelId);
+        }
       });
 
-    return Array.from(levelSet);
+    return Array.from(levelMap.entries()).map(([id, title]) => ({
+      id,
+      title,
+    }));
   }, [sessions, selectedChildId]);
 
+  const getLevelTargets = (levelId) => {
+    return levels.find((lvl) => lvl.id === levelId) || null;
+  };
+
   const summary = useMemo(() => {
-    let totalSessions = childSessions.length;
+    const totalSessions = childSessions.length;
+
     let totalItems = 0;
     let totalAttempted = 0;
-    let totalExact = 0;
-    let totalClose = 0;
-    let totalPartial = 0;
-    let totalIncorrect = 0;
-    let scoreSum = 0;
+    let overallSum = 0;
+    let initialSum = 0;
+    let middleSum = 0;
+    let endSum = 0;
 
     childSessions.forEach((session) => {
       totalItems += Number(session.totalItems || 0);
       totalAttempted += Number(session.attemptedItems || 0);
-      totalExact += Number(session.exactCount || 0);
-      totalClose += Number(session.closeCount || 0);
-      totalPartial += Number(session.partialCount || 0);
-      totalIncorrect += Number(session.incorrectCount || 0);
-      scoreSum += Number(session.overallScore || 0);
+      overallSum += Number(session.overallScore || 0);
+      initialSum += Number(session.initialAverage || 0);
+      middleSum += Number(session.middleAverage || 0);
+      endSum += Number(session.endAverage || 0);
     });
 
-    const averageProgress =
-      totalSessions > 0 ? Math.round(scoreSum / totalSessions) : 0;
+    const averageProgress = totalSessions > 0 ? Math.round(overallSum / totalSessions) : 0;
+    const averageInitial = totalSessions > 0 ? Math.round(initialSum / totalSessions) : 0;
+    const averageMiddle = totalSessions > 0 ? Math.round(middleSum / totalSessions) : 0;
+    const averageEnd = totalSessions > 0 ? Math.round(endSum / totalSessions) : 0;
 
     const completionRate =
       totalItems > 0 ? Math.round((totalAttempted / totalItems) * 100) : 0;
 
-    let clinicalNote = "Needs more structured support.";
-    if (averageProgress >= 80) clinicalNote = "Strong overall progress.";
-    else if (averageProgress >= 60) clinicalNote = "Good improvement with continued support.";
-    else if (averageProgress >= 40) clinicalNote = "Moderate progress; repeat targeted practice.";
+    const weakestArea = [
+      { key: "Initial", value: averageInitial },
+      { key: "Middle", value: averageMiddle },
+      { key: "End", value: averageEnd },
+    ].sort((a, b) => a.value - b.value)[0];
+
+    let clinicalNote = "Needs more structured therapy and repeated guided practice.";
+    if (averageProgress >= 85) {
+      clinicalNote = "Excellent performance. Child is ready for more advanced speech practice.";
+    } else if (averageProgress >= 70) {
+      clinicalNote = "Good progress with stable performance. Continue level and gradually increase complexity.";
+    } else if (averageProgress >= 55) {
+      clinicalNote = "Moderate progress. Maintain the level and focus on weak phoneme positions.";
+    }
+
+    let recommendation = "Use more therapist-guided repetition and shorter item groups.";
+    if (weakestArea.key === "Initial") {
+      recommendation = "Focus on initial sound production with repeated cue-based starts and simple sound drills.";
+    } else if (weakestArea.key === "Middle") {
+      recommendation = "Focus on middle sound consistency using segmented word practice and slower repetition.";
+    } else if (weakestArea.key === "End") {
+      recommendation = "Focus on final sound closure using end-position word drills and corrective repetition.";
+    }
 
     return {
       totalSessions,
       totalItems,
       totalAttempted,
-      totalExact,
-      totalClose,
-      totalPartial,
-      totalIncorrect,
       averageProgress,
+      averageInitial,
+      averageMiddle,
+      averageEnd,
+      weakestArea: weakestArea?.key || "-",
+      weakestScore: weakestArea?.value || 0,
       completionRate,
       clinicalNote,
+      recommendation,
     };
   }, [childSessions]);
 
@@ -173,44 +196,55 @@ const TherapistProgressPage = () => {
     const grouped = {};
 
     childSessions.forEach((session) => {
-      const key = String(session.levelTitle || session.levelId || "Unassigned");
+      const key = session.levelId || "unassigned";
 
       if (!grouped[key]) {
         grouped[key] = {
-          level: key,
+          levelId: key,
+          level: session.levelTitle || "Unassigned",
           sessions: 0,
           items: 0,
           attempted: 0,
-          exact: 0,
-          close: 0,
-          partial: 0,
-          incorrect: 0,
-          progressSum: 0,
+          overallSum: 0,
+          initialSum: 0,
+          middleSum: 0,
+          endSum: 0,
         };
       }
 
       grouped[key].sessions += 1;
       grouped[key].items += Number(session.totalItems || 0);
       grouped[key].attempted += Number(session.attemptedItems || 0);
-      grouped[key].exact += Number(session.exactCount || 0);
-      grouped[key].close += Number(session.closeCount || 0);
-      grouped[key].partial += Number(session.partialCount || 0);
-      grouped[key].incorrect += Number(session.incorrectCount || 0);
-      grouped[key].progressSum += Number(session.overallScore || 0);
+      grouped[key].overallSum += Number(session.overallScore || 0);
+      grouped[key].initialSum += Number(session.initialAverage || 0);
+      grouped[key].middleSum += Number(session.middleAverage || 0);
+      grouped[key].endSum += Number(session.endAverage || 0);
     });
 
     return Object.values(grouped).map((row) => {
-      const avgProgress =
-        row.sessions > 0 ? Math.round(row.progressSum / row.sessions) : 0;
+      const avgProgress = row.sessions > 0 ? Math.round(row.overallSum / row.sessions) : 0;
+      const avgInitial = row.sessions > 0 ? Math.round(row.initialSum / row.sessions) : 0;
+      const avgMiddle = row.sessions > 0 ? Math.round(row.middleSum / row.sessions) : 0;
+      const avgEnd = row.sessions > 0 ? Math.round(row.endSum / row.sessions) : 0;
+
+      const weakest = [
+        { key: "Initial", value: avgInitial },
+        { key: "Middle", value: avgMiddle },
+        { key: "End", value: avgEnd },
+      ].sort((a, b) => a.value - b.value)[0];
 
       let note = "Needs more practice";
-      if (avgProgress >= 80) note = "Very good";
-      else if (avgProgress >= 60) note = "Improving well";
-      else if (avgProgress >= 40) note = "Moderate";
+      if (avgProgress >= 85) note = "Excellent";
+      else if (avgProgress >= 70) note = "Improving well";
+      else if (avgProgress >= 55) note = "Moderate progress";
 
       return {
         ...row,
         avgProgress,
+        avgInitial,
+        avgMiddle,
+        avgEnd,
+        weakestArea: weakest?.key || "-",
         note,
       };
     });
@@ -228,35 +262,49 @@ const TherapistProgressPage = () => {
             itemId: attempt.itemId || "",
             itemText: attempt.itemText || "Unnamed Item",
             itemType: attempt.itemType || "word",
-            levelTitle: session.levelTitle || session.levelId || "Unassigned",
+            levelTitle: session.levelTitle || "Unassigned",
             totalAttempts: 0,
-            exact: 0,
-            close: 0,
-            partial: 0,
-            incorrect: 0,
-            latestStatus: attempt.matchStatus || "incorrect",
+            overallSum: 0,
+            initialSum: 0,
+            middleSum: 0,
+            endSum: 0,
+            latestFeedback: attempt.feedback || "",
           };
         }
 
         grouped[key].totalAttempts += 1;
-
-        if (attempt.matchStatus === "exact") grouped[key].exact += 1;
-        else if (attempt.matchStatus === "close") grouped[key].close += 1;
-        else if (attempt.matchStatus === "partial") grouped[key].partial += 1;
-        else grouped[key].incorrect += 1;
-
-        grouped[key].latestStatus = attempt.matchStatus || grouped[key].latestStatus;
+        grouped[key].overallSum += Number(attempt.score || 0);
+        grouped[key].initialSum += Number(attempt?.phonemePositionScores?.initial || 0);
+        grouped[key].middleSum += Number(attempt?.phonemePositionScores?.middle || 0);
+        grouped[key].endSum += Number(attempt?.phonemePositionScores?.end || 0);
+        grouped[key].latestFeedback = attempt.feedback || grouped[key].latestFeedback;
       });
     });
 
     return Object.values(grouped).map((row) => {
-      let note = "Needs support";
-      const strong = row.exact + row.close;
-      if (strong >= row.totalAttempts * 0.7) note = "Stable response";
-      else if (strong >= row.totalAttempts * 0.4) note = "Emerging skill";
+      const avgOverall = row.totalAttempts > 0 ? Math.round(row.overallSum / row.totalAttempts) : 0;
+      const avgInitial = row.totalAttempts > 0 ? Math.round(row.initialSum / row.totalAttempts) : 0;
+      const avgMiddle = row.totalAttempts > 0 ? Math.round(row.middleSum / row.totalAttempts) : 0;
+      const avgEnd = row.totalAttempts > 0 ? Math.round(row.endSum / row.totalAttempts) : 0;
+
+      const weakest = [
+        { key: "Initial", value: avgInitial },
+        { key: "Middle", value: avgMiddle },
+        { key: "End", value: avgEnd },
+      ].sort((a, b) => a.value - b.value)[0];
+
+      let note = "Needs therapist support";
+      if (avgOverall >= 85) note = "Stable response";
+      else if (avgOverall >= 70) note = "Emerging stability";
+      else if (avgOverall >= 55) note = `Practice weak ${weakest.key.toLowerCase()} position`;
 
       return {
         ...row,
+        avgOverall,
+        avgInitial,
+        avgMiddle,
+        avgEnd,
+        weakestArea: weakest?.key || "-",
         note,
       };
     });
@@ -277,24 +325,32 @@ const TherapistProgressPage = () => {
   const recommendations = useMemo(() => {
     const list = [];
 
-    if (summary.averageProgress < 50) {
-      list.push("Repeat the current level before moving to a harder level.");
+    if (summary.averageProgress < 55) {
+      list.push("Repeat the same level before introducing harder tasks.");
     }
 
-    if (summary.totalPartial + summary.totalIncorrect > summary.totalExact + summary.totalClose) {
-      list.push("Use more repetition-based practice for weak items.");
+    if (summary.weakestArea === "Initial") {
+      list.push("Add more initial-sound drills with clear therapist modelling.");
+    }
+
+    if (summary.weakestArea === "Middle") {
+      list.push("Use segmented word practice to improve middle-position production.");
+    }
+
+    if (summary.weakestArea === "End") {
+      list.push("Use final-sound closure drills and slower repetition tasks.");
     }
 
     if (summary.completionRate < 60) {
-      list.push("Reduce session load and focus on fewer items per session.");
+      list.push("Reduce the number of items per session and use shorter guided therapy blocks.");
     }
 
-    if (summary.averageProgress >= 60) {
-      list.push("Continue current level and gradually introduce longer words.");
+    if (summary.averageProgress >= 70) {
+      list.push("Gradually introduce more complex words, sentence tasks, or advanced items.");
     }
 
     if (list.length === 0) {
-      list.push("Maintain the current therapy approach and monitor consistency.");
+      list.push("Maintain the current therapy plan and continue monitoring consistency.");
     }
 
     return list;
@@ -306,238 +362,215 @@ const TherapistProgressPage = () => {
   };
 
   const handleDownloadReport = () => {
+    const targetLevel = selectedLevel !== "all" ? getLevelTargets(selectedLevel) : null;
+
     const reportHtml = `
       <html>
         <head>
-          <title>Pineda Patient's Progress Report</title>
+          <title>🧸 PINEDA - Therapist Progress Report</title>
           <style>
             body {
-                font-family: "Segoe UI", Arial, sans-serif;
-                padding: 40px;
-                background: #f7fbff;
-                color: #1e293b;
+              font-family: "Segoe UI", Arial, sans-serif;
+              padding: 40px;
+              background: #f7fbff;
+              color: #1e293b;
             }
-
             .report-shell {
-                max-width: 1100px;
-                margin: 0 auto;
+              max-width: 1100px;
+              margin: 0 auto;
             }
-
             .report-header {
-                background: linear-gradient(135deg, #e8f8ff, #eefcf9);
-                border: 1px solid #d8eaf5;
-                border-radius: 18px;
-                padding: 22px 24px;
-                margin-bottom: 24px;
+              background: linear-gradient(135deg, #e8f8ff, #eefcf9);
+              border: 1px solid #d8eaf5;
+              border-radius: 18px;
+              padding: 22px 24px;
+              margin-bottom: 24px;
             }
-
             .report-header h1 {
-                margin: 0 0 8px;
-                font-size: 30px;
-                color: #0f3254;
+              margin: 0 0 8px;
+              font-size: 30px;
+              color: #0f3254;
             }
-
             .report-header p {
-                margin: 4px 0;
-                color: #4f6b86;
-                font-size: 14px;
+              margin: 4px 0;
+              color: #4f6b86;
+              font-size: 14px;
             }
-
-            h2 {
-                margin: 0 0 14px;
-                font-size: 20px;
-                color: #17303d;
-            }
-
             .section {
-                margin-top: 24px;
+              margin-top: 24px;
             }
-
             .card {
-                background: #ffffff;
-                border: 1px solid #dbe8f3;
-                border-radius: 16px;
-                padding: 18px 20px;
-                box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+              background: #ffffff;
+              border: 1px solid #dbe8f3;
+              border-radius: 16px;
+              padding: 18px 20px;
             }
-
             .summary-grid {
-                display: grid;
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 14px;
-                margin-top: 14px;
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 14px;
+              margin-top: 14px;
             }
-
             .summary-item {
-                background: #f8fbff;
-                border: 1px solid #e3edf6;
-                border-radius: 14px;
-                padding: 14px;
+              background: #f8fbff;
+              border: 1px solid #e3edf6;
+              border-radius: 14px;
+              padding: 14px;
             }
-
             .summary-item span {
-                display: block;
-                margin-bottom: 6px;
-                color: #5d7691;
-                font-size: 12px;
-                font-weight: 700;
-                text-transform: uppercase;
+              display: block;
+              margin-bottom: 6px;
+              color: #5d7691;
+              font-size: 12px;
+              font-weight: 700;
+              text-transform: uppercase;
             }
-
             .summary-item strong {
-                color: #0f3254;
-                font-size: 20px;
+              color: #0f3254;
+              font-size: 20px;
             }
-
             table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 12px;
-                background: #ffffff;
-                border: 1px solid #dbe8f3;
-                border-radius: 16px;
-                overflow: hidden;
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 12px;
+              background: #ffffff;
+              border: 1px solid #dbe8f3;
             }
-
             th, td {
-                padding: 12px 14px;
-                text-align: left;
-                font-size: 14px;
-                border-bottom: 1px solid #e8f0f7;
+              padding: 12px 14px;
+              text-align: left;
+              font-size: 14px;
+              border-bottom: 1px solid #e8f0f7;
             }
-
             th {
-                background: #f4f9fd;
-                color: #4d6784;
-                font-weight: 800;
+              background: #f4f9fd;
+              color: #4d6784;
+              font-weight: 800;
             }
-
-            tr:last-child td {
-                border-bottom: none;
-            }
-
             ul {
-                margin: 0;
-                padding-left: 20px;
+              margin: 0;
+              padding-left: 20px;
             }
-
             li {
-                margin-bottom: 8px;
-                color: #4e6984;
-                line-height: 1.6;
+              margin-bottom: 8px;
+              color: #4e6984;
+              line-height: 1.6;
             }
-
-            .note-box {
-                margin-top: 14px;
-                background: #eef8fd;
-                border: 1px solid #cfe3f1;
-                border-radius: 14px;
-                padding: 14px 16px;
-                color: #0f3254;
-                font-weight: 600;
-            }
-
-            @media print {
-                body {
-                background: #ffffff;
-                padding: 18px;
-                }
-
-                .card,
-                table,
-                .report-header {
-                box-shadow: none;
-                }
-            }
-            </style>
+          </style>
         </head>
         <body>
-          <h1>Therapist Progress Report</h1>
-          <p><strong>Child:</strong> ${selectedChild?.childName || "-"}</p>
-          <p><strong>Code:</strong> ${selectedChild?.childCode || "-"}</p>
-          <p><strong>Level Filter:</strong> ${selectedLevel === "all" ? "All Levels" : selectedLevel}</p>
-
-          <div class="section">
-            <h2>Summary</h2>
-            <div class="card">
-              <p><strong>Total Sessions:</strong> ${summary.totalSessions}</p>
-              <p><strong>Total Items:</strong> ${summary.totalItems}</p>
-              <p><strong>Attempted Items:</strong> ${summary.totalAttempted}</p>
-              <p><strong>Average Progress:</strong> ${summary.averageProgress}%</p>
-              <p><strong>Completion Rate:</strong> ${summary.completionRate}%</p>
-              <p><strong>Clinical Note:</strong> ${summary.clinicalNote}</p>
+          <div class="report-shell">
+            <div class="report-header">
+              <h1>🧸 PINEDA - Therapist Progress Report</h1>
+              <p><strong>Child:</strong> ${selectedChild?.childName || "-"}</p>
+              <p><strong>Code:</strong> ${selectedChild?.childCode || "-"}</p>
+              <p><strong>Level Filter:</strong> ${selectedLevel === "all" ? "All Levels" : availableLevels.find(l => l.id === selectedLevel)?.title || "-"}</p>
             </div>
-          </div>
 
-          <div class="section">
-            <h2>Recommendations</h2>
-            <ul>
-              ${recommendations.map((item) => `<li>${item}</li>`).join("")}
-            </ul>
-          </div>
+            <div class="section">
+              <div class="card">
+                <h2>Overall Summary</h2>
+                <div class="summary-grid">
+                  <div class="summary-item"><span>Total Sessions</span><strong>${summary.totalSessions}</strong></div>
+                  <div class="summary-item"><span>Overall Avg</span><strong>${summary.averageProgress}%</strong></div>
+                  <div class="summary-item"><span>Initial Avg</span><strong>${summary.averageInitial}%</strong></div>
+                  <div class="summary-item"><span>Middle Avg</span><strong>${summary.averageMiddle}%</strong></div>
+                  <div class="summary-item"><span>End Avg</span><strong>${summary.averageEnd}%</strong></div>
+                  <div class="summary-item"><span>Weakest Area</span><strong>${summary.weakestArea}</strong></div>
+                  <div class="summary-item"><span>Weakest Score</span><strong>${summary.weakestScore}%</strong></div>
+                  <div class="summary-item"><span>Completion</span><strong>${summary.completionRate}%</strong></div>
+                </div>
+                <p style="margin-top:14px;"><strong>Clinical Note:</strong> ${summary.clinicalNote}</p>
+                <p><strong>Main Recommendation:</strong> ${summary.recommendation}</p>
+              </div>
+            </div>
 
-          <div class="section">
-            <h2>Level-by-Level Review</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Level</th>
-                  <th>Sessions</th>
-                  <th>Items</th>
-                  <th>Attempted</th>
-                  <th>Average Progress</th>
-                  <th>Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${levelBreakdown
-                  .map(
-                    (row) => `
+            ${
+              targetLevel
+                ? `
+              <div class="section">
+                <div class="card">
+                  <h2>Target Comparison</h2>
+                  <p><strong>Target Overall:</strong> ${targetLevel.targetOverallScore || 0}%</p>
+                  <p><strong>Target Initial:</strong> ${targetLevel.targetInitialScore || 0}%</p>
+                  <p><strong>Target Middle:</strong> ${targetLevel.targetMiddleScore || 0}%</p>
+                  <p><strong>Target End:</strong> ${targetLevel.targetEndScore || 0}%</p>
+                </div>
+              </div>
+            `
+                : ""
+            }
+
+            <div class="section">
+              <div class="card">
+                <h2>Recommendations</h2>
+                <ul>
+                  ${recommendations.map((item) => `<li>${item}</li>`).join("")}
+                </ul>
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Level-by-Level Review</h2>
+              <table>
+                <thead>
                   <tr>
-                    <td>${row.level}</td>
-                    <td>${row.sessions}</td>
-                    <td>${row.items}</td>
-                    <td>${row.attempted}</td>
-                    <td>${row.avgProgress}%</td>
-                    <td>${row.note}</td>
+                    <th>Level</th>
+                    <th>Sessions</th>
+                    <th>Overall Avg</th>
+                    <th>Initial Avg</th>
+                    <th>Middle Avg</th>
+                    <th>End Avg</th>
+                    <th>Weakest Area</th>
+                    <th>Note</th>
                   </tr>
-                `
-                  )
-                  .join("")}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  ${levelBreakdown.map((row) => `
+                    <tr>
+                      <td>${row.level}</td>
+                      <td>${row.sessions}</td>
+                      <td>${row.avgProgress}%</td>
+                      <td>${row.avgInitial}%</td>
+                      <td>${row.avgMiddle}%</td>
+                      <td>${row.avgEnd}%</td>
+                      <td>${row.weakestArea}</td>
+                      <td>${row.note}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
 
-          <div class="section">
-            <h2>Item-by-Item Review</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>Type</th>
-                  <th>Level</th>
-                  <th>Total Attempts</th>
-                  <th>Latest Status</th>
-                  <th>Therapist Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${itemBreakdown
-                  .map(
-                    (row) => `
+            <div class="section">
+              <h2>Item-by-Item Review</h2>
+              <table>
+                <thead>
                   <tr>
-                    <td>${row.itemText}</td>
-                    <td>${row.itemType}</td>
-                    <td>${row.levelTitle}</td>
-                    <td>${row.totalAttempts}</td>
-                    <td>${row.latestStatus}</td>
-                    <td>${row.note}</td>
+                    <th>Item</th>
+                    <th>Type</th>
+                    <th>Level</th>
+                    <th>Attempts</th>
+                    <th>Overall Avg</th>
+                    <th>Weakest Area</th>
+                    <th>Therapist Note</th>
                   </tr>
-                `
-                  )
-                  .join("")}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  ${itemBreakdown.map((row) => `
+                    <tr>
+                      <td>${row.itemText}</td>
+                      <td>${row.itemType}</td>
+                      <td>${row.levelTitle}</td>
+                      <td>${row.totalAttempts}</td>
+                      <td>${row.avgOverall}%</td>
+                      <td>${row.weakestArea}</td>
+                      <td>${row.note}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
           </div>
         </body>
       </html>
@@ -560,15 +593,13 @@ const TherapistProgressPage = () => {
 
   return (
     <div className="therapist-progress-page">
-        <TherapistNavbar /> 
+      <TherapistNavbar />
       <div className="therapist-progress-shell">
         <div className="therapist-top-header">
           <div>
             <span className="therapist-page-badge">Therapist Dashboard</span>
             <h1>Therapy Progress Review</h1>
-            <p>
-              Review child progress level by level and item by item with printable reports.
-            </p>
+            <p>Review progress using overall, initial, middle, and end speech averages.</p>
           </div>
 
           <button className="download-report-btn" onClick={handleDownloadReport}>
@@ -601,8 +632,8 @@ const TherapistProgressPage = () => {
             >
               <option value="all">All Levels</option>
               {availableLevels.map((level) => (
-                <option key={level} value={level}>
-                  {level}
+                <option key={level.id} value={level.id}>
+                  {level.title}
                 </option>
               ))}
             </select>
@@ -616,12 +647,8 @@ const TherapistProgressPage = () => {
 
           <div className="child-main-details">
             <h2>{selectedChild?.childName || "No Child Selected"}</h2>
-            <p>
-              Code: <strong>{selectedChild?.childCode || "-"}</strong>
-            </p>
-            <p>
-              Assigned Level: <strong>{selectedChild?.assignedLevelName || "-"}</strong>
-            </p>
+            <p>Code: <strong>{selectedChild?.childCode || "-"}</strong></p>
+            <p>Assigned Level: <strong>{selectedChild?.assignedLevelName || "-"}</strong></p>
           </div>
 
           <div className="child-note-box">
@@ -635,20 +662,33 @@ const TherapistProgressPage = () => {
             <span>Total Sessions</span>
             <strong>{summary.totalSessions}</strong>
           </div>
-
           <div className="summary-card">
-            <span>Average Progress</span>
+            <span>Overall Average</span>
             <strong>{summary.averageProgress}%</strong>
           </div>
-
+          <div className="summary-card">
+            <span>Initial Average</span>
+            <strong>{summary.averageInitial}%</strong>
+          </div>
+          <div className="summary-card">
+            <span>Middle Average</span>
+            <strong>{summary.averageMiddle}%</strong>
+          </div>
+          <div className="summary-card">
+            <span>End Average</span>
+            <strong>{summary.averageEnd}%</strong>
+          </div>
+          <div className="summary-card">
+            <span>Weakest Area</span>
+            <strong>{summary.weakestArea}</strong>
+          </div>
+          <div className="summary-card">
+            <span>Weakest Score</span>
+            <strong>{summary.weakestScore}%</strong>
+          </div>
           <div className="summary-card">
             <span>Completion Rate</span>
             <strong>{summary.completionRate}%</strong>
-          </div>
-
-          <div className="summary-card">
-            <span>Attempted Items</span>
-            <strong>{summary.totalAttempted}</strong>
           </div>
         </div>
 
@@ -656,7 +696,7 @@ const TherapistProgressPage = () => {
           <div className="chart-card">
             <div className="section-head">
               <h3>Progress Trend</h3>
-              <p>Recent session progress overview</p>
+              <p>Recent session overall score trend</p>
             </div>
 
             <div className="chart-bars-wrap">
@@ -667,10 +707,7 @@ const TherapistProgressPage = () => {
                   <div className="chart-bar-col" key={`${item.label}-${item.date}`}>
                     <div className="chart-value">{item.progress}%</div>
                     <div className="chart-bar-bg">
-                      <div
-                        className="chart-bar-fill"
-                        style={{ height: `${item.progress}%` }}
-                      />
+                      <div className="chart-bar-fill" style={{ height: `${item.progress}%` }} />
                     </div>
                     <span>{item.label}</span>
                   </div>
@@ -682,7 +719,7 @@ const TherapistProgressPage = () => {
           <div className="recommendation-card">
             <div className="section-head">
               <h3>Recommendations</h3>
-              <p>Therapy-focused next steps</p>
+              <p>Average-based next steps</p>
             </div>
 
             <div className="recommendation-list">
@@ -699,7 +736,7 @@ const TherapistProgressPage = () => {
         <div className="therapist-section-card">
           <div className="section-head">
             <h3>Level-by-Level Evaluation</h3>
-            <p>Therapy performance grouped by level</p>
+            <p>Grouped by speech averages</p>
           </div>
 
           {levelBreakdown.length === 0 ? (
@@ -707,7 +744,7 @@ const TherapistProgressPage = () => {
           ) : (
             <div className="level-review-list">
               {levelBreakdown.map((level) => (
-                <div className="level-review-card" key={level.level}>
+                <div className="level-review-card" key={level.levelId}>
                   <div className="level-review-top">
                     <div>
                       <h4>{level.level}</h4>
@@ -722,17 +759,21 @@ const TherapistProgressPage = () => {
                       <strong>{level.sessions}</strong>
                     </div>
                     <div>
-                      <small>Total Items</small>
-                      <strong>{level.items}</strong>
+                      <small>Initial</small>
+                      <strong>{level.avgInitial}%</strong>
                     </div>
                     <div>
-                      <small>Attempted</small>
-                      <strong>{level.attempted}</strong>
+                      <small>Middle</small>
+                      <strong>{level.avgMiddle}%</strong>
                     </div>
                     <div>
-                      <small>Strong Responses</small>
-                      <strong>{level.exact + level.close}</strong>
+                      <small>End</small>
+                      <strong>{level.avgEnd}%</strong>
                     </div>
+                  </div>
+
+                  <div className="level-extra-note">
+                    Weakest area: <strong>{level.weakestArea}</strong>
                   </div>
                 </div>
               ))}
@@ -743,7 +784,7 @@ const TherapistProgressPage = () => {
         <div className="therapist-section-card">
           <div className="section-head">
             <h3>Item-by-Item Evaluation</h3>
-            <p>Detailed review for therapist use</p>
+            <p>Detailed review using latest averages</p>
           </div>
 
           {itemBreakdown.length === 0 ? (
@@ -755,19 +796,22 @@ const TherapistProgressPage = () => {
                 <span>Type</span>
                 <span>Level</span>
                 <span>Attempts</span>
-                <span>Status</span>
+                <span>Overall Avg</span>
+                <span>Weakest Area</span>
                 <span>Note</span>
               </div>
 
               {itemBreakdown.map((item) => (
-                <div className="item-review-row" key={`${item.levelTitle}-${item.itemId}-${item.itemText}`}>
+                <div
+                  className="item-review-row item-review-row-7"
+                  key={`${item.levelTitle}-${item.itemId}-${item.itemText}`}
+                >
                   <span>{item.itemText}</span>
                   <span>{item.itemType}</span>
                   <span>{item.levelTitle}</span>
                   <span>{item.totalAttempts}</span>
-                  <span className={`status-tag ${item.latestStatus}`}>
-                    {item.latestStatus}
-                  </span>
+                  <span>{item.avgOverall}%</span>
+                  <span>{item.weakestArea}</span>
                   <span>{item.note}</span>
                 </div>
               ))}
@@ -794,7 +838,9 @@ const TherapistProgressPage = () => {
 
                   <div className="recent-session-side">
                     <strong>{session.overallScore || 0}%</strong>
-                    <span>{session.attemptedItems || 0} items attempted</span>
+                    <span>
+                      I {session.initialAverage || 0}% | M {session.middleAverage || 0}% | E {session.endAverage || 0}%
+                    </span>
                   </div>
                 </div>
               ))}

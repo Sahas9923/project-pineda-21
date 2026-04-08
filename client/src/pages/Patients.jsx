@@ -19,6 +19,15 @@ import {
   where,
 } from "firebase/firestore";
 
+const DIAGNOSIS_OPTIONS = [
+  { value: "general", label: "General" },
+  { value: "autism", label: "Autism" },
+  { value: "down_syndrome", label: "Down Syndrome" },
+];
+
+const getDiagnosisLabel = (value) =>
+  DIAGNOSIS_OPTIONS.find((item) => item.value === value)?.label || "Not set";
+
 const TherapistPatients = () => {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
@@ -34,53 +43,40 @@ const TherapistPatients = () => {
   const [patientTimeline, setPatientTimeline] = useState([]);
 
   const [searchText, setSearchText] = useState("");
-  const [selectedTab, setSelectedTab] = useState("overview");
-
   const [showAssignPanel, setShowAssignPanel] = useState(false);
+
   const [assigningPatient, setAssigningPatient] = useState(false);
-
-  const [showPatientDialog, setShowPatientDialog] = useState(false);
-  const [showDeviceDialog, setShowDeviceDialog] = useState(false);
-  const [assigningDevice, setAssigningDevice] = useState(false);
-
-  const [showLevelEditDialog, setShowLevelEditDialog] = useState(false);
-  const [showDeviceEditDialog, setShowDeviceEditDialog] = useState(false);
-  const [showPlanEditDialog, setShowPlanEditDialog] = useState(false);
-
-  const [savingLevelEdit, setSavingLevelEdit] = useState(false);
-  const [savingDeviceEdit, setSavingDeviceEdit] = useState(false);
-  const [savingPlanEdit, setSavingPlanEdit] = useState(false);
+  const [savingDiagnosis, setSavingDiagnosis] = useState(false);
+  const [savingLevel, setSavingLevel] = useState(false);
+  const [savingDevice, setSavingDevice] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
 
   const [assignPatientForm, setAssignPatientForm] = useState({
     childId: "",
     therapistId: "",
     therapistName: "",
+    diagnosisCategory: "",
+    diagnosisNotes: "",
+    levelId: "",
+    levelName: "",
+  });
+
+  const [diagnosisForm, setDiagnosisForm] = useState({
+    diagnosisCategory: "",
+    diagnosisNotes: "",
+  });
+
+  const [levelForm, setLevelForm] = useState({
     levelId: "",
     levelName: "",
   });
 
   const [deviceForm, setDeviceForm] = useState({
-    deviceName: "Pineda Companion Device",
-    maxSessionsPerDay: 3,
-    sessionDurationMinutes: 20,
-    minimumGapBetweenSessionsMinutes: 30,
-    lockTherapyAfterLimit: true,
-    therapyStartTime: "",
-    therapyEndTime: "",
-    fallbackMode: "companion",
-  });
-
-  const [levelEditForm, setLevelEditForm] = useState({
-    levelId: "",
-    levelName: "",
-  });
-
-  const [deviceEditForm, setDeviceEditForm] = useState({
-    deviceName: "",
+    deviceName: "Pineda Therapy Device",
     deviceStatus: "Assigned",
   });
 
-  const [planEditForm, setPlanEditForm] = useState({
+  const [planForm, setPlanForm] = useState({
     maxSessionsPerDay: 3,
     sessionDurationMinutes: 20,
     minimumGapBetweenSessionsMinutes: 30,
@@ -144,7 +140,7 @@ const TherapistPatients = () => {
 
       const user = auth.currentUser;
       if (!user) {
-        showMessage("❌ Therapist account not found.");
+        showMessage("Therapist account not found.");
         setLoading(false);
         return;
       }
@@ -171,9 +167,12 @@ const TherapistPatients = () => {
         where("therapistUid", "==", user.uid)
       );
       const assignedSnap = await getDocs(assignedQuery);
+
       const assignedChildren = assignedSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
+        diagnosisCategory: d.data().diagnosisCategory || "",
+        diagnosisNotes: d.data().diagnosisNotes || "",
       }));
 
       const sessionsSnap = await getDocs(collection(db, "sessions"));
@@ -216,6 +215,8 @@ const TherapistPatients = () => {
       const childrenData = childrenSnap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
+        diagnosisCategory: d.data().diagnosisCategory || "",
+        diagnosisNotes: d.data().diagnosisNotes || "",
       }));
       setAllChildren(childrenData);
 
@@ -227,7 +228,7 @@ const TherapistPatients = () => {
       setLevels(levelsData);
 
       if (assignedData.length > 0) {
-        await handleSelectPatient(assignedData[0], assignedData, false);
+        await handleSelectPatient(assignedData[0], assignedData);
       } else {
         setSelectedPatient(null);
         setTherapyPlan(null);
@@ -236,23 +237,18 @@ const TherapistPatients = () => {
       }
     } catch (error) {
       console.error("Error fetching patients data:", error);
-      showMessage("❌ Failed to load patients.");
+      showMessage("Failed to load patients.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSelectPatient = async (
-    patient,
-    sourceAssignedPatients = null,
-    openDialog = false
-  ) => {
+  const handleSelectPatient = async (patient, sourceAssignedPatients = null) => {
     try {
       const freshPatient =
         sourceAssignedPatients?.find((p) => p.id === patient.id) || patient;
 
       setSelectedPatient(freshPatient);
-      setSelectedTab("overview");
 
       const planSnap = await getDoc(doc(db, "therapyPlans", freshPatient.id));
       const planData = planSnap.exists() ? planSnap.data() : null;
@@ -331,34 +327,22 @@ const TherapistPatients = () => {
       }));
       setPatientTimeline(timelineData);
 
-      setDeviceForm({
-        deviceName: freshPatient.deviceName || "Pineda Companion Device",
-        maxSessionsPerDay: planData ? Number(planData.maxSessionsPerDay || 3) : 3,
-        sessionDurationMinutes: planData
-          ? Number(planData.sessionDurationMinutes || 20)
-          : 20,
-        minimumGapBetweenSessionsMinutes: planData
-          ? Number(planData.minimumGapBetweenSessionsMinutes || 30)
-          : 30,
-        lockTherapyAfterLimit: planData
-          ? !!planData.lockTherapyAfterLimit
-          : true,
-        therapyStartTime: planData?.therapyStartTime || "",
-        therapyEndTime: planData?.therapyEndTime || "",
-        fallbackMode: planData?.fallbackMode || "companion",
+      setDiagnosisForm({
+        diagnosisCategory: freshPatient.diagnosisCategory || "",
+        diagnosisNotes: freshPatient.diagnosisNotes || "",
       });
 
-      setLevelEditForm({
+      setLevelForm({
         levelId: freshPatient.assignedLevelId || "",
         levelName: freshPatient.assignedLevelName || "",
       });
 
-      setDeviceEditForm({
-        deviceName: freshPatient.deviceName || "Pineda Companion Device",
+      setDeviceForm({
+        deviceName: freshPatient.deviceName || "Pineda Therapy Device",
         deviceStatus: freshPatient.deviceStatus || "Assigned",
       });
 
-      setPlanEditForm({
+      setPlanForm({
         maxSessionsPerDay: planData ? Number(planData.maxSessionsPerDay || 3) : 3,
         sessionDurationMinutes: planData
           ? Number(planData.sessionDurationMinutes || 20)
@@ -373,73 +357,10 @@ const TherapistPatients = () => {
         therapyEndTime: planData?.therapyEndTime || "",
         fallbackMode: planData?.fallbackMode || "companion",
       });
-
-      if (openDialog) setShowPatientDialog(true);
     } catch (error) {
       console.error("Error selecting patient:", error);
-      showMessage("❌ Failed to load patient details.");
+      showMessage("Failed to load patient details.");
     }
-  };
-
-  const handleAssignPatientFormChange = (e) => {
-    const { name, value } = e.target;
-    setAssignPatientForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleLevelChange = (e) => {
-    const levelId = e.target.value;
-    const selectedLevel = levels.find((level) => level.id === levelId);
-
-    setAssignPatientForm((prev) => ({
-      ...prev,
-      levelId,
-      levelName:
-        selectedLevel?.title ||
-        selectedLevel?.levelName ||
-        selectedLevel?.name ||
-        "",
-    }));
-  };
-
-  const handleDeviceFormChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    setDeviceForm((prev) => ({
-      ...prev,
-      [name]: type === "checkbox" ? checked : value,
-    }));
-  };
-
-  const handleLevelEditChange = (e) => {
-    const levelId = e.target.value;
-    const selectedLevel = levels.find((level) => level.id === levelId);
-
-    setLevelEditForm({
-      levelId,
-      levelName:
-        selectedLevel?.title ||
-        selectedLevel?.levelName ||
-        selectedLevel?.name ||
-        "",
-    });
-  };
-
-  const handleDeviceEditChange = (e) => {
-    const { name, value } = e.target;
-    setDeviceEditForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handlePlanEditChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    setPlanEditForm((prev) => ({
-      ...prev,
-      [name]: type === "checkbox" ? checked : value,
-    }));
   };
 
   const filteredAssignedPatients = useMemo(() => {
@@ -449,14 +370,16 @@ const TherapistPatients = () => {
     return assignedPatients.filter((patient) => {
       const childName = patient.childName?.toLowerCase() || "";
       const childCode = patient.childCode?.toLowerCase() || "";
-      const parentId = patient.parentId?.toLowerCase() || "";
       const parentEmail = patient.parentEmail?.toLowerCase() || "";
+      const diagnosis = getDiagnosisLabel(
+        patient.diagnosisCategory || ""
+      ).toLowerCase();
 
       return (
         childName.includes(keyword) ||
         childCode.includes(keyword) ||
-        parentId.includes(keyword) ||
-        parentEmail.includes(keyword)
+        parentEmail.includes(keyword) ||
+        diagnosis.includes(keyword)
       );
     });
   }, [assignedPatients, searchText]);
@@ -465,49 +388,108 @@ const TherapistPatients = () => {
     return allChildren.filter((child) => !child.therapistUid);
   }, [allChildren]);
 
+  const assignSelectedChild = useMemo(() => {
+    return allChildren.find((child) => child.id === assignPatientForm.childId) || null;
+  }, [allChildren, assignPatientForm.childId]);
+
+  const assignableLevelsForSelectedChild = useMemo(() => {
+    if (!assignPatientForm.diagnosisCategory) return [];
+
+    return levels
+      .filter(
+        (level) => (level.category || "") === assignPatientForm.diagnosisCategory
+      )
+      .sort((a, b) => Number(a.stage || 0) - Number(b.stage || 0));
+  }, [levels, assignPatientForm.diagnosisCategory]);
+
+  const relatedLevels = useMemo(() => {
+    if (!diagnosisForm.diagnosisCategory) return [];
+    return levels
+      .filter((level) => (level.category || "") === diagnosisForm.diagnosisCategory)
+      .sort((a, b) => Number(a.stage || 0) - Number(b.stage || 0));
+  }, [levels, diagnosisForm.diagnosisCategory]);
+
   const stats = useMemo(() => {
     const totalAssigned = assignedPatients.length;
     const withDevice = assignedPatients.filter((p) => p.deviceAssigned).length;
     const withLevel = assignedPatients.filter((p) => p.assignedLevelId).length;
-
-    const patientsWithProgress = assignedPatients.filter(
-      (p) => Number(p.overallProgress || 0) > 0
-    );
-
-    const avgProgress =
-      patientsWithProgress.length > 0
-        ? Math.round(
-            patientsWithProgress.reduce(
-              (sum, patient) => sum + Number(patient.overallProgress || 0),
-              0
-            ) / patientsWithProgress.length
-          )
-        : 0;
+    const withDiagnosis = assignedPatients.filter((p) => p.diagnosisCategory).length;
 
     return {
       totalAssigned,
       withDevice,
       withLevel,
-      avgProgress,
+      withDiagnosis,
     };
   }, [assignedPatients]);
+
+  const handleAssignPatientFormChange = (e) => {
+    const { name, value } = e.target;
+
+    setAssignPatientForm((prev) => {
+      const updated = { ...prev, [name]: value };
+
+      if (name === "childId") {
+        const selectedChild = allChildren.find((child) => child.id === value);
+
+        updated.diagnosisCategory = selectedChild?.diagnosisCategory || "";
+        updated.diagnosisNotes = selectedChild?.diagnosisNotes || "";
+        updated.levelId = "";
+        updated.levelName = "";
+      }
+
+      if (name === "diagnosisCategory") {
+        updated.levelId = "";
+        updated.levelName = "";
+      }
+
+      return updated;
+    });
+  };
+
+  const handleAssignLevelChange = (e) => {
+    const levelId = e.target.value;
+    const selectedLevel = levels.find((level) => level.id === levelId);
+
+    setAssignPatientForm((prev) => ({
+      ...prev,
+      levelId,
+      levelName:
+        selectedLevel?.title ||
+        selectedLevel?.levelName ||
+        selectedLevel?.name ||
+        "",
+    }));
+  };
 
   const handleAssignPatient = async (e) => {
     e.preventDefault();
 
     const user = auth.currentUser;
     if (!user || !therapistData) {
-      showMessage("❌ Therapist account not found.");
+      showMessage("Therapist account not found.");
       return;
     }
 
     if (!assignPatientForm.childId) {
-      showMessage("❌ Please select a patient.");
+      showMessage("Please select a patient.");
+      return;
+    }
+
+    if (!assignPatientForm.diagnosisCategory) {
+      showMessage("Please select a diagnosis.");
       return;
     }
 
     if (!assignPatientForm.levelId) {
-      showMessage("❌ Please select a level.");
+      showMessage("Please select a level.");
+      return;
+    }
+
+    const selectedLevel = levels.find((level) => level.id === assignPatientForm.levelId);
+
+    if ((selectedLevel?.category || "") !== assignPatientForm.diagnosisCategory) {
+      showMessage("Selected level does not match diagnosis category.");
       return;
     }
 
@@ -521,16 +503,32 @@ const TherapistPatients = () => {
         therapistContact: therapistData.contact || "",
         therapistId: therapistData.therapistId || "",
         therapistImageUrl: therapistData.imageUrl || "",
+        diagnosisCategory: assignPatientForm.diagnosisCategory,
+        diagnosisNotes: assignPatientForm.diagnosisNotes.trim(),
         assignedLevelId: assignPatientForm.levelId,
         assignedLevelName: assignPatientForm.levelName,
         updatedAt: serverTimestamp(),
       });
 
+      await setDoc(
+        doc(db, "therapyPlans", assignPatientForm.childId),
+        {
+          childId: assignPatientForm.childId,
+          therapistUid: user.uid,
+          therapistName: therapistData.name || "Therapist",
+          diagnosisCategory: assignPatientForm.diagnosisCategory,
+          levelId: assignPatientForm.levelId,
+          levelName: assignPatientForm.levelName,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
       await addDoc(collection(db, "children", assignPatientForm.childId, "timeline"), {
-        title: "Patient assigned by therapist",
-        description: `${
-          therapistData.name || "Therapist"
-        } assigned level ${assignPatientForm.levelName}.`,
+        title: "Patient assigned",
+        description: `${therapistData.name || "Therapist"} assigned patient with diagnosis ${getDiagnosisLabel(
+          assignPatientForm.diagnosisCategory
+        )} and level ${assignPatientForm.levelName}.`,
         createdAt: serverTimestamp(),
       });
 
@@ -538,170 +536,148 @@ const TherapistPatients = () => {
         childId: "",
         therapistId: therapistData.therapistId || "",
         therapistName: therapistData.name || "Therapist",
+        diagnosisCategory: "",
+        diagnosisNotes: "",
         levelId: "",
         levelName: "",
       });
 
       setShowAssignPanel(false);
-      showMessage("✅ Patient assigned successfully.");
+      showMessage("Patient assigned successfully.");
       await fetchInitialData();
     } catch (error) {
       console.error("Error assigning patient:", error);
-      showMessage("❌ Failed to assign patient.");
+      showMessage("Failed to assign patient.");
     } finally {
       setAssigningPatient(false);
     }
   };
 
-  const openAssignDeviceDialog = () => {
-    if (!selectedPatient) {
-      showMessage("⚠️ Please select a patient first.");
-      return;
-    }
-
-    if (!selectedPatient.therapistUid) {
-      showMessage("⚠️ Assign the patient to a therapist first.");
-      return;
-    }
-
-    if (!selectedPatient.assignedLevelId) {
-      showMessage("⚠️ Assign a level before assigning a device.");
-      return;
-    }
-
-    setShowDeviceDialog(true);
+  const handleDiagnosisChange = (e) => {
+    const { name, value } = e.target;
+    setDiagnosisForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
   };
 
-  const handleAssignDevice = async (e) => {
+  const handleSaveDiagnosis = async (e) => {
     e.preventDefault();
 
-    const user = auth.currentUser;
-    if (!user || !therapistData || !selectedPatient) {
-      showMessage("❌ Missing therapist or patient details.");
-      return;
-    }
+    if (!selectedPatient) return;
 
-    if (!deviceForm.deviceName.trim()) {
-      showMessage("❌ Please enter device name.");
-      return;
-    }
-
-    if (Number(deviceForm.maxSessionsPerDay) < 1) {
-      showMessage("❌ Max sessions per day must be at least 1.");
-      return;
-    }
-
-    if (Number(deviceForm.sessionDurationMinutes) < 1) {
-      showMessage("❌ Session duration must be at least 1 minute.");
-      return;
-    }
-
-    if (Number(deviceForm.minimumGapBetweenSessionsMinutes) < 0) {
-      showMessage("❌ Minimum gap between sessions is invalid.");
+    if (!diagnosisForm.diagnosisCategory) {
+      showMessage("Please select a diagnosis.");
       return;
     }
 
     try {
-      setAssigningDevice(true);
+      setSavingDiagnosis(true);
 
-      const generatedDeviceCode = await generateDeviceCodeFromCounter();
+      const currentAssignedLevelId = selectedPatient.assignedLevelId || "";
+      const currentLevel = levels.find((l) => l.id === currentAssignedLevelId);
 
-      await updateDoc(doc(db, "children", selectedPatient.id), {
-        deviceAssigned: true,
-        deviceId: generatedDeviceCode,
-        deviceCode: generatedDeviceCode,
-        deviceName: deviceForm.deviceName.trim(),
-        deviceStatus: "Assigned",
+      const updatePayload = {
+        diagnosisCategory: diagnosisForm.diagnosisCategory,
+        diagnosisNotes: diagnosisForm.diagnosisNotes.trim(),
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      if (
+        currentLevel &&
+        currentLevel.category !== diagnosisForm.diagnosisCategory
+      ) {
+        updatePayload.assignedLevelId = "";
+        updatePayload.assignedLevelName = "";
+        setLevelForm({
+          levelId: "",
+          levelName: "",
+        });
+      }
+
+      await updateDoc(doc(db, "children", selectedPatient.id), updatePayload);
 
       await setDoc(
         doc(db, "therapyPlans", selectedPatient.id),
         {
-          childId: selectedPatient.id,
-          therapistUid: user.uid,
-          therapistName: therapistData.name || "Therapist",
-          levelId: selectedPatient.assignedLevelId || "",
-          levelName: selectedPatient.assignedLevelName || "",
-          maxSessionsPerDay: Number(deviceForm.maxSessionsPerDay),
-          sessionDurationMinutes: Number(deviceForm.sessionDurationMinutes),
-          minimumGapBetweenSessionsMinutes: Number(
-            deviceForm.minimumGapBetweenSessionsMinutes
-          ),
-          lockTherapyAfterLimit: !!deviceForm.lockTherapyAfterLimit,
-          therapyStartTime: deviceForm.therapyStartTime || "",
-          therapyEndTime: deviceForm.therapyEndTime || "",
-          fallbackMode: deviceForm.fallbackMode || "companion",
-          modesAllowed: ["therapy", "companion"],
-          modeSelectionAtDevice: true,
+          diagnosisCategory: diagnosisForm.diagnosisCategory,
           updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
-
-      await setDoc(
-        doc(db, "devices", generatedDeviceCode),
-        {
-          deviceId: generatedDeviceCode,
-          deviceCode: generatedDeviceCode,
-          deviceName: deviceForm.deviceName.trim(),
-          deviceStatus: "Assigned",
-          childId: selectedPatient.id,
-          childName: selectedPatient.childName || "",
-          childCode: selectedPatient.childCode || "",
-          therapistUid: user.uid,
-          therapistName: therapistData.name || "Therapist",
-          therapistId: therapistData.therapistId || "",
-          parentId: selectedPatient.parentId || "",
-          parentEmail: selectedPatient.parentEmail || "",
-          assignedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          modesAllowed: ["therapy", "companion"],
         },
         { merge: true }
       );
 
       await addDoc(collection(db, "children", selectedPatient.id, "timeline"), {
-        title: "Device assigned",
-        description: `Device ${generatedDeviceCode} assigned with therapy rules.`,
+        title: "Diagnosis updated",
+        description: `Diagnosis updated to ${getDiagnosisLabel(
+          diagnosisForm.diagnosisCategory
+        )}.`,
         createdAt: serverTimestamp(),
       });
 
-      setShowDeviceDialog(false);
-      showMessage(`✅ Device assigned successfully. Device ID: ${generatedDeviceCode}`);
+      showMessage("Diagnosis saved successfully.");
       await fetchInitialData();
     } catch (error) {
-      console.error("Error assigning device:", error);
-      showMessage("❌ Failed to assign device.");
+      console.error("Error updating diagnosis:", error);
+      showMessage("Failed to update diagnosis.");
     } finally {
-      setAssigningDevice(false);
+      setSavingDiagnosis(false);
     }
   };
 
-  const handleSaveLevelEdit = async (e) => {
+  const handleLevelFormChange = (e) => {
+    const levelId = e.target.value;
+    const selectedLevel = levels.find((level) => level.id === levelId);
+
+    setLevelForm({
+      levelId,
+      levelName:
+        selectedLevel?.title ||
+        selectedLevel?.levelName ||
+        selectedLevel?.name ||
+        "",
+    });
+  };
+
+  const handleSaveLevel = async (e) => {
     e.preventDefault();
 
     if (!selectedPatient) return;
-    if (!levelEditForm.levelId) {
-      showMessage("❌ Please select a level.");
+
+    if (!diagnosisForm.diagnosisCategory) {
+      showMessage("Add diagnosis first.");
+      return;
+    }
+
+    if (!levelForm.levelId) {
+      showMessage("Please select a level.");
+      return;
+    }
+
+    const selectedLevel = levels.find((level) => level.id === levelForm.levelId);
+    if ((selectedLevel?.category || "") !== diagnosisForm.diagnosisCategory) {
+      showMessage("Selected level does not match diagnosis category.");
       return;
     }
 
     try {
-      setSavingLevelEdit(true);
+      setSavingLevel(true);
 
       await updateDoc(doc(db, "children", selectedPatient.id), {
-        assignedLevelId: levelEditForm.levelId,
-        assignedLevelName: levelEditForm.levelName,
+        assignedLevelId: levelForm.levelId,
+        assignedLevelName: levelForm.levelName,
+        diagnosisCategory: diagnosisForm.diagnosisCategory,
         updatedAt: serverTimestamp(),
       });
 
       await setDoc(
         doc(db, "therapyPlans", selectedPatient.id),
         {
-          levelId: levelEditForm.levelId,
-          levelName: levelEditForm.levelName,
+          childId: selectedPatient.id,
+          therapistUid: selectedPatient.therapistUid || "",
+          therapistName: selectedPatient.therapistName || "",
+          levelId: levelForm.levelId,
+          levelName: levelForm.levelName,
+          diagnosisCategory: diagnosisForm.diagnosisCategory,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
@@ -709,43 +685,57 @@ const TherapistPatients = () => {
 
       await addDoc(collection(db, "children", selectedPatient.id, "timeline"), {
         title: "Level updated",
-        description: `Assigned level changed to ${levelEditForm.levelName}.`,
+        description: `Level changed to ${levelForm.levelName}.`,
         createdAt: serverTimestamp(),
       });
 
-      setShowLevelEditDialog(false);
-      showMessage("✅ Level assignment updated.");
+      showMessage("Level saved successfully.");
       await fetchInitialData();
     } catch (error) {
       console.error("Error updating level:", error);
-      showMessage("❌ Failed to update level.");
+      showMessage("Failed to update level.");
     } finally {
-      setSavingLevelEdit(false);
+      setSavingLevel(false);
     }
   };
 
-  const handleSaveDeviceEdit = async (e) => {
+  const handleDeviceFormChange = (e) => {
+    const { name, value } = e.target;
+    setDeviceForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  const handleSaveDevice = async (e) => {
     e.preventDefault();
 
-    if (!selectedPatient) return;
-    if (!selectedPatient.deviceId && !selectedPatient.deviceCode) {
-      showMessage("⚠️ No device assigned yet.");
+    const user = auth.currentUser;
+    if (!selectedPatient || !therapistData || !user) return;
+
+    if (!selectedPatient.assignedLevelId && !levelForm.levelId) {
+      showMessage("Assign level first.");
       return;
     }
 
-    if (!deviceEditForm.deviceName.trim()) {
-      showMessage("❌ Please enter device name.");
+    if (!deviceForm.deviceName.trim()) {
+      showMessage("Please enter a device name.");
       return;
     }
 
     try {
-      setSavingDeviceEdit(true);
+      setSavingDevice(true);
 
-      const deviceDocId = selectedPatient.deviceId || selectedPatient.deviceCode;
+      const existingDeviceId =
+        selectedPatient.deviceId || selectedPatient.deviceCode || "";
+      const deviceDocId = existingDeviceId || (await generateDeviceCodeFromCounter());
 
       await updateDoc(doc(db, "children", selectedPatient.id), {
-        deviceName: deviceEditForm.deviceName.trim(),
-        deviceStatus: deviceEditForm.deviceStatus,
+        deviceAssigned: true,
+        deviceId: deviceDocId,
+        deviceCode: deviceDocId,
+        deviceName: deviceForm.deviceName.trim(),
+        deviceStatus: deviceForm.deviceStatus,
         updatedAt: serverTimestamp(),
       });
 
@@ -754,52 +744,71 @@ const TherapistPatients = () => {
         {
           deviceId: deviceDocId,
           deviceCode: deviceDocId,
-          deviceName: deviceEditForm.deviceName.trim(),
-          deviceStatus: deviceEditForm.deviceStatus,
+          deviceName: deviceForm.deviceName.trim(),
+          deviceStatus: deviceForm.deviceStatus,
+          childId: selectedPatient.id,
+          childName: selectedPatient.childName || "",
+          childCode: selectedPatient.childCode || "",
+          diagnosisCategory:
+            diagnosisForm.diagnosisCategory || selectedPatient.diagnosisCategory || "",
+          therapistUid: user.uid,
+          therapistName: therapistData.name || "Therapist",
+          therapistId: therapistData.therapistId || "",
+          parentId: selectedPatient.parentId || "",
+          parentEmail: selectedPatient.parentEmail || "",
           updatedAt: serverTimestamp(),
+          assignedAt: serverTimestamp(),
+          modesAllowed: ["therapy", "companion"],
         },
         { merge: true }
       );
 
       await addDoc(collection(db, "children", selectedPatient.id, "timeline"), {
-        title: "Device info updated",
-        description: `Device information updated for ${deviceDocId}.`,
+        title: existingDeviceId ? "Device updated" : "Device assigned",
+        description: `Device ${deviceDocId} is ready for the patient.`,
         createdAt: serverTimestamp(),
       });
 
-      setShowDeviceEditDialog(false);
-      showMessage("✅ Device info updated.");
+      showMessage(`Device saved successfully. ID: ${deviceDocId}`);
       await fetchInitialData();
     } catch (error) {
-      console.error("Error updating device info:", error);
-      showMessage("❌ Failed to update device info.");
+      console.error("Error saving device:", error);
+      showMessage("Failed to save device.");
     } finally {
-      setSavingDeviceEdit(false);
+      setSavingDevice(false);
     }
   };
 
-  const handleSavePlanEdit = async (e) => {
+  const handlePlanFormChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setPlanForm((prev) => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value,
+    }));
+  };
+
+  const handleSavePlan = async (e) => {
     e.preventDefault();
 
     if (!selectedPatient) return;
 
-    if (Number(planEditForm.maxSessionsPerDay) < 1) {
-      showMessage("❌ Max sessions per day must be at least 1.");
+    if (Number(planForm.maxSessionsPerDay) < 1) {
+      showMessage("Max sessions must be at least 1.");
       return;
     }
 
-    if (Number(planEditForm.sessionDurationMinutes) < 1) {
-      showMessage("❌ Session duration must be at least 1 minute.");
+    if (Number(planForm.sessionDurationMinutes) < 1) {
+      showMessage("Session duration must be at least 1 minute.");
       return;
     }
 
-    if (Number(planEditForm.minimumGapBetweenSessionsMinutes) < 0) {
-      showMessage("❌ Minimum gap between sessions is invalid.");
+    if (Number(planForm.minimumGapBetweenSessionsMinutes) < 0) {
+      showMessage("Minimum gap is invalid.");
       return;
     }
 
     try {
-      setSavingPlanEdit(true);
+      setSavingPlan(true);
 
       await setDoc(
         doc(db, "therapyPlans", selectedPatient.id),
@@ -807,17 +816,19 @@ const TherapistPatients = () => {
           childId: selectedPatient.id,
           therapistUid: selectedPatient.therapistUid || "",
           therapistName: selectedPatient.therapistName || "",
-          levelId: selectedPatient.assignedLevelId || "",
-          levelName: selectedPatient.assignedLevelName || "",
-          maxSessionsPerDay: Number(planEditForm.maxSessionsPerDay),
-          sessionDurationMinutes: Number(planEditForm.sessionDurationMinutes),
+          levelId: selectedPatient.assignedLevelId || levelForm.levelId || "",
+          levelName: selectedPatient.assignedLevelName || levelForm.levelName || "",
+          diagnosisCategory:
+            diagnosisForm.diagnosisCategory || selectedPatient.diagnosisCategory || "",
+          maxSessionsPerDay: Number(planForm.maxSessionsPerDay),
+          sessionDurationMinutes: Number(planForm.sessionDurationMinutes),
           minimumGapBetweenSessionsMinutes: Number(
-            planEditForm.minimumGapBetweenSessionsMinutes
+            planForm.minimumGapBetweenSessionsMinutes
           ),
-          lockTherapyAfterLimit: !!planEditForm.lockTherapyAfterLimit,
-          therapyStartTime: planEditForm.therapyStartTime || "",
-          therapyEndTime: planEditForm.therapyEndTime || "",
-          fallbackMode: planEditForm.fallbackMode || "companion",
+          lockTherapyAfterLimit: !!planForm.lockTherapyAfterLimit,
+          therapyStartTime: planForm.therapyStartTime || "",
+          therapyEndTime: planForm.therapyEndTime || "",
+          fallbackMode: planForm.fallbackMode || "companion",
           modesAllowed: ["therapy", "companion"],
           modeSelectionAtDevice: true,
           updatedAt: serverTimestamp(),
@@ -827,860 +838,654 @@ const TherapistPatients = () => {
 
       await addDoc(collection(db, "children", selectedPatient.id, "timeline"), {
         title: "Therapy plan updated",
-        description: "Therapy plan values were updated by therapist.",
+        description: "Therapy plan values were updated.",
         createdAt: serverTimestamp(),
       });
 
-      setShowPlanEditDialog(false);
-      showMessage("✅ Therapy plan updated.");
+      showMessage("Therapy plan saved successfully.");
       await fetchInitialData();
     } catch (error) {
-      console.error("Error updating therapy plan:", error);
-      showMessage("❌ Failed to update therapy plan.");
+      console.error("Error saving therapy plan:", error);
+      showMessage("Failed to save therapy plan.");
     } finally {
-      setSavingPlanEdit(false);
+      setSavingPlan(false);
     }
   };
 
+  const diagnosisReady = !!diagnosisForm.diagnosisCategory;
+  const levelReady = !!(selectedPatient?.assignedLevelId || levelForm.levelId);
+  const deviceReady = !!selectedPatient?.deviceAssigned;
+
   return (
-    <div className="therapist-patients-page">
+    <div className="tpv2-page">
       <TherapistNavbar />
 
-      <div className="therapist-patients-container">
-        <section className="patients-hero-card">
-          <div className="hero-copy">
-            <span className="patients-badge">👩‍⚕️ Patient Management</span>
+      <div className="tpv2-container">
+        <section className="tpv2-hero">
+          <div className="tpv2-hero-copy">
+            <span className="tpv2-badge">Therapist Patient Workspace</span>
             <h1>Therapist Patients</h1>
             <p>
-              Manage assigned children, review progress, assign levels and devices,
-              and update therapy plans from one modern workspace.
+              Add diagnosis, view related levels, assign devices, and manage therapy
+              plans in one guided flow.
             </p>
           </div>
 
-          <div className="patients-hero-actions">
-            <button
-              className="assign-patient-btn"
-              onClick={() => setShowAssignPanel(!showAssignPanel)}
-            >
-              {showAssignPanel ? "Close Assign Panel" : "+ Assign Patient"}
-            </button>
+          <button
+            className="tpv2-primary-btn"
+            type="button"
+            onClick={() => setShowAssignPanel((prev) => !prev)}
+          >
+            {showAssignPanel ? "Close Assign Panel" : "Assign New Patient"}
+          </button>
+        </section>
+
+        <section className="tpv2-stats">
+          <div className="tpv2-stat-card">
+            <h3>{stats.totalAssigned}</h3>
+            <p>Assigned Patients</p>
+          </div>
+          <div className="tpv2-stat-card">
+            <h3>{stats.withDiagnosis}</h3>
+            <p>Diagnosis Added</p>
+          </div>
+          <div className="tpv2-stat-card">
+            <h3>{stats.withLevel}</h3>
+            <p>Level Assigned</p>
+          </div>
+          <div className="tpv2-stat-card">
+            <h3>{stats.withDevice}</h3>
+            <p>Device Ready</p>
           </div>
         </section>
 
-        <section className="patients-stats-grid">
-          <div className="patients-stat-card">
-            <div className="patients-stat-icon">👶</div>
-            <div>
-              <h3>{stats.totalAssigned}</h3>
-              <p>Assigned Patients</p>
-            </div>
-          </div>
-
-          <div className="patients-stat-card">
-            <div className="patients-stat-icon">📘</div>
-            <div>
-              <h3>{stats.withLevel}</h3>
-              <p>With Assigned Level</p>
-            </div>
-          </div>
-
-          <div className="patients-stat-card">
-            <div className="patients-stat-icon">🧸</div>
-            <div>
-              <h3>{stats.withDevice}</h3>
-              <p>With Assigned Device</p>
-            </div>
-          </div>
-
-          <div className="patients-stat-card">
-            <div className="patients-stat-icon">📈</div>
-            <div>
-              <h3>{stats.avgProgress}%</h3>
-              <p>Average Progress</p>
-            </div>
-          </div>
-        </section>
-
-        <section className="patients-toolbar">
-          <div className="search-box">
-            <input
-              type="text"
-              placeholder="Search by child name, child code, parent ID, or parent email"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-            />
-          </div>
-        </section>
-
-        {message && <div className="message-box">{message}</div>}
+        {message && <div className="tpv2-message">{message}</div>}
 
         {showAssignPanel && (
-          <section className="assign-panel-card">
-            <div className="card-head">
+          <section className="tpv2-assign-panel">
+            <div className="tpv2-section-head">
               <h2>Assign Patient</h2>
-              <p>Select an unassigned child and assign a level.</p>
+              <p>
+                Select child, add diagnosis, and assign the correct level in one flow.
+              </p>
             </div>
 
-            <form className="assign-form" onSubmit={handleAssignPatient}>
-              <div className="assign-grid">
-                <select
-                  name="childId"
-                  value={assignPatientForm.childId}
-                  onChange={handleAssignPatientFormChange}
-                >
-                  <option value="">Select Patient</option>
-                  {availableChildrenToAssign.map((child) => (
-                    <option key={child.id} value={child.id}>
-                      {child.childName} ({child.childCode || "No Code"})
-                    </option>
-                  ))}
-                </select>
+            <form className="tpv2-form" onSubmit={handleAssignPatient}>
+              <div className="tpv2-grid two">
+                <div className="tpv2-field">
+                  <label>Patient</label>
+                  <select
+                    name="childId"
+                    value={assignPatientForm.childId}
+                    onChange={handleAssignPatientFormChange}
+                  >
+                    <option value="">Select Patient</option>
+                    {availableChildrenToAssign.map((child) => (
+                      <option key={child.id} value={child.id}>
+                        {child.childName} ({child.childCode || "No Code"})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                <input
-                  type="text"
-                  name="therapistName"
-                  value={assignPatientForm.therapistName}
-                  readOnly
-                  placeholder="Therapist"
-                />
+                <div className="tpv2-field">
+                  <label>Therapist</label>
+                  <input
+                    type="text"
+                    name="therapistName"
+                    value={assignPatientForm.therapistName}
+                    readOnly
+                  />
+                </div>
 
-                <select
-                  name="levelId"
-                  value={assignPatientForm.levelId}
-                  onChange={handleLevelChange}
-                >
-                  <option value="">Select Level</option>
-                  {levels.map((level) => (
-                    <option key={level.id} value={level.id}>
-                      {level.title || level.levelName || level.name}
+                <div className="tpv2-field">
+                  <label>Diagnosis</label>
+                  <select
+                    name="diagnosisCategory"
+                    value={assignPatientForm.diagnosisCategory}
+                    onChange={handleAssignPatientFormChange}
+                    disabled={!assignPatientForm.childId}
+                  >
+                    <option value="">
+                      {!assignPatientForm.childId
+                        ? "Select Patient First"
+                        : "Select Diagnosis"}
                     </option>
-                  ))}
-                </select>
+                    {DIAGNOSIS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="tpv2-field">
+                  <label>Level</label>
+                  <select
+                    name="levelId"
+                    value={assignPatientForm.levelId}
+                    onChange={handleAssignLevelChange}
+                    disabled={!assignPatientForm.diagnosisCategory}
+                  >
+                    <option value="">
+                      {!assignPatientForm.diagnosisCategory
+                        ? "Select Diagnosis First"
+                        : "Select Level"}
+                    </option>
+                    {assignableLevelsForSelectedChild.map((level) => (
+                      <option key={level.id} value={level.id}>
+                        Stage {level.stage || 1} - {level.title || level.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              <button
-                type="submit"
-                className="save-assign-btn"
-                disabled={assigningPatient}
-              >
-                {assigningPatient ? "Assigning..." : "Assign Patient"}
-              </button>
+              <div className="tpv2-field">
+                <label>Diagnosis Notes</label>
+                <textarea
+                  name="diagnosisNotes"
+                  value={assignPatientForm.diagnosisNotes}
+                  onChange={handleAssignPatientFormChange}
+                  placeholder="Add therapist diagnosis notes"
+                />
+              </div>
+
+              {assignPatientForm.childId && (
+                <div className="tpv2-info-chip">
+                  Diagnosis Path:{" "}
+                  {assignPatientForm.diagnosisCategory
+                    ? getDiagnosisLabel(assignPatientForm.diagnosisCategory)
+                    : "Not selected yet"}
+                </div>
+              )}
+
+              <div className="tpv2-actions">
+                <button
+                  className="tpv2-primary-btn"
+                  type="submit"
+                  disabled={assigningPatient}
+                >
+                  {assigningPatient ? "Assigning..." : "Assign Patient"}
+                </button>
+              </div>
             </form>
           </section>
         )}
 
+        <section className="tpv2-toolbar">
+          <input
+            type="text"
+            placeholder="Search patient by name, code, email, or diagnosis"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+          />
+        </section>
+
         {loading ? (
-          <div className="state-card">Loading patients...</div>
+          <div className="tpv2-loading-card">Loading patients...</div>
         ) : (
-          <section className="patients-main-section">
-            <div className="patient-list-card">
-              <div className="card-head">
+          <div className="tpv2-main">
+            <aside className="tpv2-sidebar">
+              <div className="tpv2-section-head">
                 <h2>Patient List</h2>
-                <p>All assigned patients are visible here with quick status details.</p>
+                <p>Select a patient to manage diagnosis and related levels.</p>
               </div>
 
-              {filteredAssignedPatients.length === 0 ? (
-                <p className="empty-text">No assigned patients found.</p>
-              ) : (
-                <div className="patient-list-grid">
-                  {filteredAssignedPatients.map((patient) => (
-                    <div
+              <div className="tpv2-patient-list">
+                {filteredAssignedPatients.length === 0 ? (
+                  <div className="tpv2-empty">No assigned patients found.</div>
+                ) : (
+                  filteredAssignedPatients.map((patient) => (
+                    <button
                       key={patient.id}
-                      className={`patient-card ${
-                        selectedPatient?.id === patient.id ? "active-patient-card" : ""
+                      type="button"
+                      className={`tpv2-patient-row ${
+                        selectedPatient?.id === patient.id ? "active" : ""
                       }`}
+                      onClick={() => handleSelectPatient(patient)}
                     >
-                      <div className="patient-card-top">
-                        {patient.childImageUrl ? (
-                          <img
-                            src={patient.childImageUrl}
-                            alt={patient.childName}
-                            className="patient-avatar"
-                          />
-                        ) : (
-                          <div className="patient-avatar-placeholder">🧒</div>
-                        )}
+                      <div className="tpv2-patient-row-top">
+                        <div className="tpv2-patient-avatar">
+                          {patient.childImageUrl ? (
+                            <img src={patient.childImageUrl} alt={patient.childName} />
+                          ) : (
+                            <span>🧒</span>
+                          )}
+                        </div>
 
-                        <div className="patient-card-main">
-                          <h3>{patient.childName || "Child"}</h3>
+                        <div className="tpv2-patient-meta">
+                          <h4>{patient.childName || "Child"}</h4>
                           <p>{patient.childCode || "No Code"}</p>
                         </div>
-
-                        <span className="status-pill">
-                          {patient.status || "active"}
-                        </span>
                       </div>
 
-                      <div className="patient-mini-grid">
-                        <div className="mini-info-box">
-                          <span>Parent</span>
-                          <strong>{patient.parentName || "N/A"}</strong>
-                        </div>
-
-                        <div className="mini-info-box">
-                          <span>Level</span>
-                          <strong>{patient.assignedLevelName || "Not Assigned"}</strong>
-                        </div>
-
-                        <div className="mini-info-box">
-                          <span>Device</span>
-                          <strong>{patient.deviceAssigned ? "Assigned" : "Not Assigned"}</strong>
-                        </div>
-
-                        <div className="mini-info-box">
-                          <span>Progress</span>
-                          <strong>{patient.overallProgress || 0}%</strong>
-                        </div>
+                      <div className="tpv2-patient-tags">
+                        <span>{getDiagnosisLabel(patient.diagnosisCategory || "")}</span>
+                        <span>{patient.assignedLevelName || "No Level"}</span>
                       </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </aside>
 
-                      <div className="patient-card-actions">
-                        <button
-                          className="ghost-action-btn"
-                          onClick={() => handleSelectPatient(patient)}
-                          type="button"
-                        >
-                          Select
-                        </button>
-
-                        <button
-                          className="primary-action-btn"
-                          onClick={() => handleSelectPatient(patient, null, true)}
-                          type="button"
-                        >
-                          View Details
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="quick-summary-card">
+            <main className="tpv2-workflow">
               {!selectedPatient ? (
-                <div className="empty-summary">
-                  <h3>No Patient Selected</h3>
-                  <p>Select a patient from the list to see quick actions and details.</p>
+                <div className="tpv2-empty big">
+                  Select a patient from the left panel.
                 </div>
               ) : (
                 <>
-                  <div className="quick-summary-head">
-                    <h2>Quick Summary</h2>
-                    <p>
-                      Fast access to device, level, and therapy plan actions for{" "}
-                      {selectedPatient.childName || "this child"}.
-                    </p>
-                  </div>
+                  <section className="tpv2-workflow-head">
+                    <div>
+                      <h2>{selectedPatient.childName || "Child"}</h2>
+                      <p>
+                        {selectedPatient.childCode || "No Code"} •{" "}
+                        {selectedPatient.parentName || "Parent not set"}
+                      </p>
+                    </div>
 
-                  <div className="summary-highlight-card">
-                    <div className="summary-highlight-top">
-                      {selectedPatient.childImageUrl ? (
-                        <img
-                          src={selectedPatient.childImageUrl}
-                          alt={selectedPatient.childName}
-                          className="summary-avatar"
-                        />
-                      ) : (
-                        <div className="summary-avatar-placeholder">🧒</div>
-                      )}
+                    <div className="tpv2-progress-chip">
+                      Progress {reportData?.overallProgress ?? 0}%
+                    </div>
+                  </section>
 
+                  <section className="tpv2-step-card">
+                    <div className="tpv2-step-title">
+                      <div className="tpv2-step-number">1</div>
                       <div>
-                        <h3>{selectedPatient.childName || "Child"}</h3>
-                        <p>{selectedPatient.childCode || "No Code"}</p>
+                        <h3>Diagnosis</h3>
+                        <p>Select diagnosis first to unlock the related level path.</p>
                       </div>
                     </div>
 
-                    <div className="progress-block">
-                      <div className="progress-label-row">
+                    <form className="tpv2-form" onSubmit={handleSaveDiagnosis}>
+                      <div className="tpv2-grid two">
+                        <div className="tpv2-field">
+                          <label>Diagnosis Category</label>
+                          <select
+                            name="diagnosisCategory"
+                            value={diagnosisForm.diagnosisCategory}
+                            onChange={handleDiagnosisChange}
+                          >
+                            <option value="">Select Diagnosis</option>
+                            {DIAGNOSIS_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Related Level Path</label>
+                          <input
+                            type="text"
+                            readOnly
+                            value={
+                              diagnosisForm.diagnosisCategory
+                                ? `${getDiagnosisLabel(diagnosisForm.diagnosisCategory)} Levels`
+                                : "Diagnosis not selected"
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="tpv2-field">
+                        <label>Diagnosis Notes</label>
+                        <textarea
+                          name="diagnosisNotes"
+                          value={diagnosisForm.diagnosisNotes}
+                          onChange={handleDiagnosisChange}
+                          placeholder="Add therapist diagnosis notes"
+                        />
+                      </div>
+
+                      <div className="tpv2-actions">
+                        <button
+                          className="tpv2-primary-btn"
+                          type="submit"
+                          disabled={savingDiagnosis}
+                        >
+                          {savingDiagnosis ? "Saving..." : "Save Diagnosis"}
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section className={`tpv2-step-card ${!diagnosisReady ? "locked" : ""}`}>
+                    <div className="tpv2-step-title">
+                      <div className="tpv2-step-number">2</div>
+                      <div>
+                        <h3>Related Levels</h3>
+                        <p>Only levels matching the selected diagnosis are shown here.</p>
+                      </div>
+                    </div>
+
+                    <form className="tpv2-form" onSubmit={handleSaveLevel}>
+                      <div className="tpv2-grid two">
+                        <div className="tpv2-field">
+                          <label>Diagnosis</label>
+                          <input
+                            type="text"
+                            readOnly
+                            value={
+                              diagnosisForm.diagnosisCategory
+                                ? getDiagnosisLabel(diagnosisForm.diagnosisCategory)
+                                : "Diagnosis required first"
+                            }
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Select Level</label>
+                          <select
+                            value={levelForm.levelId}
+                            onChange={handleLevelFormChange}
+                            disabled={!diagnosisReady}
+                          >
+                            <option value="">
+                              {!diagnosisReady
+                                ? "Save Diagnosis First"
+                                : "Select Related Level"}
+                            </option>
+
+                            {relatedLevels.map((level) => (
+                              <option key={level.id} value={level.id}>
+                                Stage {level.stage || 1} - {level.title || level.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="tpv2-actions">
+                        <button
+                          className="tpv2-primary-btn"
+                          type="submit"
+                          disabled={!diagnosisReady || savingLevel}
+                        >
+                          {savingLevel ? "Saving..." : "Save Level"}
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section className={`tpv2-step-card ${!levelReady ? "locked" : ""}`}>
+                    <div className="tpv2-step-title">
+                      <div className="tpv2-step-number">3</div>
+                      <div>
+                        <h3>Device Setup</h3>
+                        <p>Assign or update the therapy device after level assignment.</p>
+                      </div>
+                    </div>
+
+                    <form className="tpv2-form" onSubmit={handleSaveDevice}>
+                      <div className="tpv2-grid two">
+                        <div className="tpv2-field">
+                          <label>Device Name</label>
+                          <input
+                            type="text"
+                            name="deviceName"
+                            value={deviceForm.deviceName}
+                            onChange={handleDeviceFormChange}
+                            disabled={!levelReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Device Status</label>
+                          <select
+                            name="deviceStatus"
+                            value={deviceForm.deviceStatus}
+                            onChange={handleDeviceFormChange}
+                            disabled={!levelReady}
+                          >
+                            <option value="Assigned">Assigned</option>
+                            <option value="Active">Active</option>
+                            <option value="Ready">Ready</option>
+                            <option value="Paused">Paused</option>
+                            <option value="Maintenance">Maintenance</option>
+                            <option value="Disabled">Disabled</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="tpv2-info-chip">
+                        Device ID: {selectedPatient.deviceId || selectedPatient.deviceCode || "Will be generated automatically"}
+                      </div>
+
+                      <div className="tpv2-actions">
+                        <button
+                          className="tpv2-primary-btn"
+                          type="submit"
+                          disabled={!levelReady || savingDevice}
+                        >
+                          {savingDevice ? "Saving..." : "Save Device"}
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+
+                  <section className={`tpv2-step-card ${!deviceReady ? "locked" : ""}`}>
+                    <div className="tpv2-step-title">
+                      <div className="tpv2-step-number">4</div>
+                      <div>
+                        <h3>Therapy Plan</h3>
+                        <p>Define the daily therapy settings and timing rules.</p>
+                      </div>
+                    </div>
+
+                    <form className="tpv2-form" onSubmit={handleSavePlan}>
+                      <div className="tpv2-grid three">
+                        <div className="tpv2-field">
+                          <label>Max Sessions / Day</label>
+                          <input
+                            type="number"
+                            name="maxSessionsPerDay"
+                            min="1"
+                            value={planForm.maxSessionsPerDay}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Session Duration (mins)</label>
+                          <input
+                            type="number"
+                            name="sessionDurationMinutes"
+                            min="1"
+                            value={planForm.sessionDurationMinutes}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Minimum Gap (mins)</label>
+                          <input
+                            type="number"
+                            name="minimumGapBetweenSessionsMinutes"
+                            min="0"
+                            value={planForm.minimumGapBetweenSessionsMinutes}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Therapy Start Time</label>
+                          <input
+                            type="time"
+                            name="therapyStartTime"
+                            value={planForm.therapyStartTime}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Therapy End Time</label>
+                          <input
+                            type="time"
+                            name="therapyEndTime"
+                            value={planForm.therapyEndTime}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          />
+                        </div>
+
+                        <div className="tpv2-field">
+                          <label>Fallback Mode</label>
+                          <select
+                            name="fallbackMode"
+                            value={planForm.fallbackMode}
+                            onChange={handlePlanFormChange}
+                            disabled={!deviceReady}
+                          >
+                            <option value="companion">Companion Mode</option>
+                            <option value="therapy">Therapy Mode</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <label className="tpv2-checkbox">
+                        <input
+                          type="checkbox"
+                          name="lockTherapyAfterLimit"
+                          checked={planForm.lockTherapyAfterLimit}
+                          onChange={handlePlanFormChange}
+                          disabled={!deviceReady}
+                        />
+                        <span>Lock therapy after daily limit</span>
+                      </label>
+
+                      <div className="tpv2-actions">
+                        <button
+                          className="tpv2-primary-btn"
+                          type="submit"
+                          disabled={!deviceReady || savingPlan}
+                        >
+                          {savingPlan ? "Saving..." : "Save Therapy Plan"}
+                        </button>
+                      </div>
+                    </form>
+                  </section>
+                </>
+              )}
+            </main>
+
+            <aside className="tpv2-summary">
+              {!selectedPatient ? (
+                <div className="tpv2-empty">Select a patient to view summary.</div>
+              ) : (
+                <>
+                  <div className="tpv2-summary-card">
+                    <h3>Quick Summary</h3>
+
+                    <div className="tpv2-summary-item">
+                      <span>Diagnosis</span>
+                      <strong>
+                        {selectedPatient.diagnosisCategory
+                          ? getDiagnosisLabel(selectedPatient.diagnosisCategory)
+                          : "Not added"}
+                      </strong>
+                    </div>
+
+                    <div className="tpv2-summary-item">
+                      <span>Assigned Level</span>
+                      <strong>{selectedPatient.assignedLevelName || "Not assigned"}</strong>
+                    </div>
+
+                    <div className="tpv2-summary-item">
+                      <span>Device</span>
+                      <strong>{selectedPatient.deviceName || "Not assigned"}</strong>
+                    </div>
+
+                    <div className="tpv2-summary-item">
+                      <span>Sessions</span>
+                      <strong>{reportData?.totalSessionsCompleted ?? 0}</strong>
+                    </div>
+
+                    <div className="tpv2-summary-item">
+                      <span>Completed Items</span>
+                      <strong>{reportData?.totalCompletedItems ?? 0}</strong>
+                    </div>
+
+                    <div className="tpv2-progress-wrap">
+                      <div className="tpv2-progress-label">
                         <span>Overall Progress</span>
                         <strong>{reportData?.overallProgress ?? 0}%</strong>
                       </div>
-                      <div className="progress-track">
+                      <div className="tpv2-progress-bar">
                         <div
-                          className="progress-fill"
+                          className="tpv2-progress-fill"
                           style={{ width: `${reportData?.overallProgress ?? 0}%` }}
-                        ></div>
-                      </div>
-                    </div>
-
-                    <div className="summary-grid">
-                      <div className="summary-item">
-                        <span>Assigned Level</span>
-                        <strong>{selectedPatient.assignedLevelName || "N/A"}</strong>
-                      </div>
-                      <div className="summary-item">
-                        <span>Device</span>
-                        <strong>{selectedPatient.deviceName || "Not Assigned"}</strong>
-                      </div>
-                      <div className="summary-item">
-                        <span>Sessions</span>
-                        <strong>{reportData?.totalSessionsCompleted ?? 0}</strong>
-                      </div>
-                      <div className="summary-item">
-                        <span>Parent</span>
-                        <strong>{selectedPatient.parentName || "N/A"}</strong>
+                        />
                       </div>
                     </div>
                   </div>
 
-                  <div className="quick-action-grid">
-                    <button
-                      type="button"
-                      className="quick-action-btn"
-                      onClick={() => setShowLevelEditDialog(true)}
-                    >
-                      Edit Level
-                    </button>
+                  <div className="tpv2-summary-card">
+                    <h3>Parent Information</h3>
+                    <div className="tpv2-summary-item">
+                      <span>Parent Name</span>
+                      <strong>{selectedPatient.parentName || "N/A"}</strong>
+                    </div>
+                    <div className="tpv2-summary-item">
+                      <span>Email</span>
+                      <strong>{selectedPatient.parentEmail || "N/A"}</strong>
+                    </div>
+                    <div className="tpv2-summary-item">
+                      <span>Contact</span>
+                      <strong>{selectedPatient.parentContact || "N/A"}</strong>
+                    </div>
+                  </div>
 
-                    <button
-                      type="button"
-                      className="quick-action-btn"
-                      onClick={openAssignDeviceDialog}
-                    >
-                      Assign Device
-                    </button>
+                  <div className="tpv2-summary-card">
+                    <h3>Recent Timeline</h3>
+                    {patientTimeline.length === 0 ? (
+                      <div className="tpv2-empty small">No updates yet.</div>
+                    ) : (
+                      <div className="tpv2-timeline">
+                        {patientTimeline.map((item) => (
+                          <div className="tpv2-timeline-item" key={item.id}>
+                            <div className="tpv2-timeline-dot" />
+                            <div>
+                              <h4>{item.title || "Update"}</h4>
+                              <p>{item.description || "No description available."}</p>
+                              <span>{formatDate(item.createdAt)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-                    <button
-                      type="button"
-                      className="quick-action-btn"
-                      onClick={() => setShowDeviceEditDialog(true)}
-                    >
-                      Edit Device
-                    </button>
-
-                    <button
-                      type="button"
-                      className="quick-action-btn"
-                      onClick={() => setShowPlanEditDialog(true)}
-                    >
-                      Edit Therapy Plan
-                    </button>
-
-                    <button
-                      type="button"
-                      className="quick-action-btn wide-action-btn"
-                      onClick={() => setShowPatientDialog(true)}
-                    >
-                      Open Full Patient Details
-                    </button>
+                  <div className="tpv2-summary-card">
+                    <h3>Current Plan</h3>
+                    <div className="tpv2-summary-item">
+                      <span>Max Sessions</span>
+                      <strong>{therapyPlan?.maxSessionsPerDay ?? "N/A"}</strong>
+                    </div>
+                    <div className="tpv2-summary-item">
+                      <span>Duration</span>
+                      <strong>
+                        {therapyPlan?.sessionDurationMinutes
+                          ? `${therapyPlan.sessionDurationMinutes} mins`
+                          : "N/A"}
+                      </strong>
+                    </div>
+                    <div className="tpv2-summary-item">
+                      <span>Fallback</span>
+                      <strong>{therapyPlan?.fallbackMode || "companion"}</strong>
+                    </div>
                   </div>
                 </>
               )}
-            </div>
-          </section>
-        )}
-
-        {showPatientDialog && selectedPatient && (
-          <div className="modal-overlay" onClick={() => setShowPatientDialog(false)}>
-            <div className="patient-details-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Patient Full Details</h2>
-                <button
-                  type="button"
-                  className="close-modal-btn"
-                  onClick={() => setShowPatientDialog(false)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="patient-dialog-top">
-                {selectedPatient.childImageUrl ? (
-                  <img
-                    src={selectedPatient.childImageUrl}
-                    alt={selectedPatient.childName}
-                    className="dialog-avatar"
-                  />
-                ) : (
-                  <div className="dialog-avatar-placeholder">🧒</div>
-                )}
-
-                <div className="dialog-title-block">
-                  <h3>{selectedPatient.childName || "Child"}</h3>
-                  <p>{selectedPatient.childCode || "No Code"}</p>
-                  <span className="dialog-status-badge">
-                    {selectedPatient.status || "active"}
-                  </span>
-                </div>
-              </div>
-
-              <div className="dialog-tabs">
-                <button
-                  type="button"
-                  className={selectedTab === "overview" ? "active-dialog-tab" : ""}
-                  onClick={() => setSelectedTab("overview")}
-                >
-                  Overview
-                </button>
-
-                <button
-                  type="button"
-                  className={selectedTab === "assignment" ? "active-dialog-tab" : ""}
-                  onClick={() => setSelectedTab("assignment")}
-                >
-                  Assignment
-                </button>
-
-                <button
-                  type="button"
-                  className={selectedTab === "timeline" ? "active-dialog-tab" : ""}
-                  onClick={() => setSelectedTab("timeline")}
-                >
-                  Timeline
-                </button>
-              </div>
-
-              {selectedTab === "overview" && (
-                <div className="dialog-content-grid">
-                  <div className="dialog-info-card">
-                    <h4>Child Information</h4>
-                    <p><strong>Name:</strong> {selectedPatient.childName || "N/A"}</p>
-                    <p><strong>Code:</strong> {selectedPatient.childCode || "N/A"}</p>
-                    <p><strong>Age:</strong> {selectedPatient.age || "N/A"}</p>
-                    <p><strong>Gender:</strong> {selectedPatient.gender || "N/A"}</p>
-                    <p><strong>Status:</strong> {selectedPatient.status || "active"}</p>
-                  </div>
-
-                  <div className="dialog-info-card">
-                    <h4>Parent Information</h4>
-                    <p><strong>Name:</strong> {selectedPatient.parentName || "N/A"}</p>
-                    <p><strong>Parent ID:</strong> {selectedPatient.parentId || "N/A"}</p>
-                    <p><strong>Email:</strong> {selectedPatient.parentEmail || "N/A"}</p>
-                    <p><strong>Contact:</strong> {selectedPatient.parentContact || "N/A"}</p>
-                  </div>
-
-                  <div className="dialog-info-card dialog-wide-card">
-                    <h4>Progress Summary</h4>
-                    <div className="progress-label-row">
-                      <span>Current Progress</span>
-                      <strong>{reportData?.overallProgress ?? 0}%</strong>
-                    </div>
-                    <div className="progress-track">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${reportData?.overallProgress ?? 0}%` }}
-                      ></div>
-                    </div>
-                    <p><strong>Completed Sessions:</strong> {reportData?.totalSessionsCompleted ?? 0}</p>
-                    <p><strong>Completed Items:</strong> {reportData?.totalCompletedItems ?? 0}</p>
-                    <p><strong>Total Items:</strong> {reportData?.totalItems ?? 0}</p>
-                  </div>
-                </div>
-              )}
-
-              {selectedTab === "assignment" && (
-                <div className="dialog-content-grid">
-                  <div className="dialog-info-card">
-                    <div className="dialog-card-head">
-                      <h4>Level Assignment</h4>
-                      <button
-                        className="mini-edit-btn"
-                        type="button"
-                        onClick={() => setShowLevelEditDialog(true)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                    <p><strong>Assigned Level:</strong> {selectedPatient.assignedLevelName || "N/A"}</p>
-                    <p><strong>Strongest Area:</strong> {reportData?.strongestArea || "N/A"}</p>
-                    <p><strong>Support Area:</strong> {reportData?.supportArea || "N/A"}</p>
-                  </div>
-
-                  <div className="dialog-info-card">
-                    <div className="dialog-card-head">
-                      <h4>Device Information</h4>
-                      <button
-                        className="mini-edit-btn"
-                        type="button"
-                        onClick={() => setShowDeviceEditDialog(true)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                    <p><strong>Assigned:</strong> {selectedPatient.deviceAssigned ? "Yes" : "No"}</p>
-                    <p><strong>Device ID:</strong> {selectedPatient.deviceId || "N/A"}</p>
-                    <p><strong>Device Code:</strong> {selectedPatient.deviceCode || "N/A"}</p>
-                    <p><strong>Device Name:</strong> {selectedPatient.deviceName || "N/A"}</p>
-                    <p><strong>Status:</strong> {selectedPatient.deviceStatus || "N/A"}</p>
-                  </div>
-
-                  <div className="dialog-info-card dialog-wide-card">
-                    <div className="dialog-card-head">
-                      <h4>Therapy Plan & Recommendations</h4>
-                      <button
-                        className="mini-edit-btn"
-                        type="button"
-                        onClick={() => setShowPlanEditDialog(true)}
-                      >
-                        Edit
-                      </button>
-                    </div>
-                    <p><strong>Max Sessions / Day:</strong> {therapyPlan?.maxSessionsPerDay ?? "N/A"}</p>
-                    <p><strong>Session Duration:</strong> {therapyPlan?.sessionDurationMinutes ?? "N/A"} mins</p>
-                    <p><strong>Minimum Gap:</strong> {therapyPlan?.minimumGapBetweenSessionsMinutes ?? "N/A"} mins</p>
-                    <p><strong>Therapy Time:</strong> {therapyPlan?.therapyStartTime || "N/A"} - {therapyPlan?.therapyEndTime || "N/A"}</p>
-                    <p><strong>Fallback Mode:</strong> {therapyPlan?.fallbackMode || "companion"}</p>
-                    <p><strong>Summary:</strong> {reportData?.therapistSummary || "No summary yet"}</p>
-                    <p><strong>Recommendation:</strong> {reportData?.overallRecommendation || "No recommendation yet"}</p>
-                    <p><strong>Home Advice:</strong> {reportData?.homeAdvice || "No advice yet"}</p>
-                  </div>
-                </div>
-              )}
-
-              {selectedTab === "timeline" && (
-                <div className="timeline-card">
-                  <h3>Recent Timeline</h3>
-
-                  {patientTimeline.length === 0 ? (
-                    <p className="empty-text">No updates found yet.</p>
-                  ) : (
-                    <div className="timeline-list">
-                      {patientTimeline.map((item) => (
-                        <div className="timeline-item" key={item.id}>
-                          <div className="timeline-dot"></div>
-                          <div className="timeline-content">
-                            <h4>{item.title || "Update"}</h4>
-                            <p>{item.description || "No description available."}</p>
-                            <span>{formatDate(item.createdAt)}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {showDeviceDialog && (
-          <div className="modal-overlay" onClick={() => setShowDeviceDialog(false)}>
-            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Assign Device</h2>
-                <button
-                  type="button"
-                  className="close-modal-btn"
-                  onClick={() => setShowDeviceDialog(false)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              <p className="modal-subtext">
-                Device ID will be auto-generated. Therapy and companion modes will
-                be available.
-              </p>
-
-              <form className="assign-form" onSubmit={handleAssignDevice}>
-                <div className="assign-grid">
-                  <input
-                    type="text"
-                    name="deviceName"
-                    placeholder="Device Name"
-                    value={deviceForm.deviceName}
-                    onChange={handleDeviceFormChange}
-                  />
-
-                  <input
-                    type="number"
-                    name="maxSessionsPerDay"
-                    placeholder="Max Sessions Per Day"
-                    value={deviceForm.maxSessionsPerDay}
-                    onChange={handleDeviceFormChange}
-                    min="1"
-                  />
-
-                  <input
-                    type="number"
-                    name="sessionDurationMinutes"
-                    placeholder="Session Duration Minutes"
-                    value={deviceForm.sessionDurationMinutes}
-                    onChange={handleDeviceFormChange}
-                    min="1"
-                  />
-
-                  <input
-                    type="number"
-                    name="minimumGapBetweenSessionsMinutes"
-                    placeholder="Minimum Gap Between Sessions"
-                    value={deviceForm.minimumGapBetweenSessionsMinutes}
-                    onChange={handleDeviceFormChange}
-                    min="0"
-                  />
-
-                  <input
-                    type="time"
-                    name="therapyStartTime"
-                    value={deviceForm.therapyStartTime}
-                    onChange={handleDeviceFormChange}
-                  />
-
-                  <input
-                    type="time"
-                    name="therapyEndTime"
-                    value={deviceForm.therapyEndTime}
-                    onChange={handleDeviceFormChange}
-                  />
-
-                  <select
-                    name="fallbackMode"
-                    value={deviceForm.fallbackMode}
-                    onChange={handleDeviceFormChange}
-                  >
-                    <option value="companion">Fallback: Companion Mode</option>
-                    <option value="therapy">Fallback: Therapy Mode</option>
-                  </select>
-
-                  <div className="readonly-info-box">
-                    Device ID: Auto-generated on assign
-                  </div>
-                </div>
-
-                <div className="assign-checks">
-                  <label>
-                    <input
-                      type="checkbox"
-                      name="lockTherapyAfterLimit"
-                      checked={deviceForm.lockTherapyAfterLimit}
-                      onChange={handleDeviceFormChange}
-                    />{" "}
-                    Lock Therapy After Daily Limit
-                  </label>
-                </div>
-
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="modal-cancel-btn"
-                    onClick={() => setShowDeviceDialog(false)}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="save-assign-btn"
-                    disabled={assigningDevice}
-                  >
-                    {assigningDevice ? "Assigning Device..." : "Assign Device"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {showLevelEditDialog && (
-          <div className="modal-overlay" onClick={() => setShowLevelEditDialog(false)}>
-            <div className="modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Edit Level Assignment</h2>
-                <button
-                  type="button"
-                  className="close-modal-btn"
-                  onClick={() => setShowLevelEditDialog(false)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              <form className="assign-form" onSubmit={handleSaveLevelEdit}>
-                <select value={levelEditForm.levelId} onChange={handleLevelEditChange}>
-                  <option value="">Select Level</option>
-                  {levels.map((level) => (
-                    <option key={level.id} value={level.id}>
-                      {level.title || level.levelName || level.name}
-                    </option>
-                  ))}
-                </select>
-
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="modal-cancel-btn"
-                    onClick={() => setShowLevelEditDialog(false)}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="save-assign-btn"
-                    disabled={savingLevelEdit}
-                  >
-                    {savingLevelEdit ? "Saving..." : "Save Level"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {showDeviceEditDialog && (
-          <div className="modal-overlay" onClick={() => setShowDeviceEditDialog(false)}>
-            <div className="modal-card small-modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Edit Device Info</h2>
-                <button
-                  type="button"
-                  className="close-modal-btn"
-                  onClick={() => setShowDeviceEditDialog(false)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              <form className="assign-form" onSubmit={handleSaveDeviceEdit}>
-                <input
-                  type="text"
-                  name="deviceName"
-                  placeholder="Device Name"
-                  value={deviceEditForm.deviceName}
-                  onChange={handleDeviceEditChange}
-                />
-
-                <select
-                  name="deviceStatus"
-                  value={deviceEditForm.deviceStatus}
-                  onChange={handleDeviceEditChange}
-                >
-                  <option value="Assigned">Assigned</option>
-                  <option value="Active">Active</option>
-                  <option value="Ready">Ready</option>
-                  <option value="Paused">Paused</option>
-                  <option value="Maintenance">Maintenance</option>
-                  <option value="Disabled">Disabled</option>
-                </select>
-
-                <div className="readonly-info-box">
-                  Device ID: {selectedPatient?.deviceId || selectedPatient?.deviceCode || "N/A"}
-                </div>
-
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="modal-cancel-btn"
-                    onClick={() => setShowDeviceEditDialog(false)}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="save-assign-btn"
-                    disabled={savingDeviceEdit}
-                  >
-                    {savingDeviceEdit ? "Saving..." : "Save Device Info"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {showPlanEditDialog && (
-          <div className="modal-overlay" onClick={() => setShowPlanEditDialog(false)}>
-            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-header">
-                <h2>Edit Therapy Plan</h2>
-                <button
-                  type="button"
-                  className="close-modal-btn"
-                  onClick={() => setShowPlanEditDialog(false)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              <form className="assign-form" onSubmit={handleSavePlanEdit}>
-                <div className="assign-grid">
-                  <input
-                    type="number"
-                    name="maxSessionsPerDay"
-                    placeholder="Max Sessions Per Day"
-                    value={planEditForm.maxSessionsPerDay}
-                    onChange={handlePlanEditChange}
-                    min="1"
-                  />
-
-                  <input
-                    type="number"
-                    name="sessionDurationMinutes"
-                    placeholder="Session Duration Minutes"
-                    value={planEditForm.sessionDurationMinutes}
-                    onChange={handlePlanEditChange}
-                    min="1"
-                  />
-
-                  <input
-                    type="number"
-                    name="minimumGapBetweenSessionsMinutes"
-                    placeholder="Minimum Gap Between Sessions"
-                    value={planEditForm.minimumGapBetweenSessionsMinutes}
-                    onChange={handlePlanEditChange}
-                    min="0"
-                  />
-
-                  <input
-                    type="time"
-                    name="therapyStartTime"
-                    value={planEditForm.therapyStartTime}
-                    onChange={handlePlanEditChange}
-                  />
-
-                  <input
-                    type="time"
-                    name="therapyEndTime"
-                    value={planEditForm.therapyEndTime}
-                    onChange={handlePlanEditChange}
-                  />
-
-                  <select
-                    name="fallbackMode"
-                    value={planEditForm.fallbackMode}
-                    onChange={handlePlanEditChange}
-                  >
-                    <option value="companion">Fallback: Companion Mode</option>
-                    <option value="therapy">Fallback: Therapy Mode</option>
-                  </select>
-
-                  <div className="readonly-info-box">
-                    Modes Allowed: Therapy + Companion
-                  </div>
-                </div>
-
-                <div className="assign-checks">
-                  <label>
-                    <input
-                      type="checkbox"
-                      name="lockTherapyAfterLimit"
-                      checked={planEditForm.lockTherapyAfterLimit}
-                      onChange={handlePlanEditChange}
-                    />{" "}
-                    Lock Therapy After Daily Limit
-                  </label>
-                </div>
-
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="modal-cancel-btn"
-                    onClick={() => setShowPlanEditDialog(false)}
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    type="submit"
-                    className="save-assign-btn"
-                    disabled={savingPlanEdit}
-                  >
-                    {savingPlanEdit ? "Saving..." : "Save Therapy Plan"}
-                  </button>
-                </div>
-              </form>
-            </div>
+            </aside>
           </div>
         )}
       </div>

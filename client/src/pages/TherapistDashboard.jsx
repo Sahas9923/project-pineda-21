@@ -47,9 +47,38 @@ const TherapistDashboard = () => {
     fetchDashboardData();
   }, []);
 
+  const getChildCategory = (child) => {
+    return (
+      child.childCategory ||
+      child.category ||
+      child.learningCategory ||
+      "General"
+    );
+  };
+
+  const getGuidedModeStatus = (child) => {
+    return Boolean(
+      child.guidedModeEnabled ||
+        child.onlineGuidedSession ||
+        child.isGuidedMode ||
+        child.guidedSessionEnabled
+    );
+  };
+
+  const getLessonPlanStatus = (child) => {
+    return Boolean(
+      child.assignedLevelId ||
+        child.assignedLevelName ||
+        child.lessonPlanId ||
+        child.lessonPlanName
+    );
+  };
+
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
+      setPageMessage("");
+
       const user = auth.currentUser;
 
       if (!user) {
@@ -86,11 +115,30 @@ const TherapistDashboard = () => {
         ...childDoc.data(),
       }));
 
-      const sessionsSnapshot = await getDocs(collection(db, "sessions"));
-      const allSessions = sessionsSnapshot.docs.map((sessionDoc) => ({
-        id: sessionDoc.id,
-        ...sessionDoc.data(),
-      }));
+      let allSessions = [];
+
+      try {
+        const therapistSessionsQuery = query(
+          collection(db, "sessions"),
+          where("therapistUid", "==", user.uid)
+        );
+        const sessionsSnapshot = await getDocs(therapistSessionsQuery);
+        allSessions = sessionsSnapshot.docs.map((sessionDoc) => ({
+          id: sessionDoc.id,
+          ...sessionDoc.data(),
+        }));
+      } catch (error) {
+        console.warn(
+          "Therapist-based session query failed, falling back to full session scan.",
+          error
+        );
+
+        const sessionsSnapshot = await getDocs(collection(db, "sessions"));
+        allSessions = sessionsSnapshot.docs.map((sessionDoc) => ({
+          id: sessionDoc.id,
+          ...sessionDoc.data(),
+        }));
+      }
 
       const patientList = [];
       const reportList = [];
@@ -151,8 +199,13 @@ const TherapistDashboard = () => {
               })[0]
             : null;
 
+        const childCategory = getChildCategory(child);
+
         const patientItem = {
           ...child,
+          childCategory,
+          guidedModeEnabled: getGuidedModeStatus(child),
+          hasLessonPlan: getLessonPlanStatus(child),
           overallProgress:
             sessionAverageProgress > 0
               ? sessionAverageProgress
@@ -174,6 +227,21 @@ const TherapistDashboard = () => {
           reportStatus:
             reportData?.reportStatus || (reportData ? "Completed" : "Pending"),
           sessionCount,
+          phonemeFocus:
+            reportData?.phonemeFocus ||
+            child.phonemeFocus ||
+            child.targetPhonemePosition ||
+            "Not set",
+          staircaseStage:
+            reportData?.staircaseStage ||
+            child.staircaseStage ||
+            child.currentStairStage ||
+            "Stage 1",
+          latestActivityType:
+            latestSession?.activityType ||
+            child.activityType ||
+            child.assignedActivityType ||
+            "Mixed",
         };
 
         patientList.push(patientItem);
@@ -184,7 +252,12 @@ const TherapistDashboard = () => {
           childCode: child.childCode || "N/A",
           reportStatus: patientItem.reportStatus,
           overallProgress: patientItem.overallProgress,
-          levelName: child.assignedLevelName || "Not assigned",
+          levelName:
+            child.assignedLevelName ||
+            child.lessonPlanName ||
+            "Not assigned",
+          childCategory,
+          phonemeFocus: patientItem.phonemeFocus,
         });
       }
 
@@ -201,9 +274,7 @@ const TherapistDashboard = () => {
   const stats = useMemo(() => {
     const totalPatients = patients.length;
 
-    const activePlans = patients.filter(
-      (p) => p.assignedLevelId || p.assignedLevelName
-    ).length;
+    const activePlans = patients.filter((p) => p.hasLessonPlan).length;
 
     const assignedDevices = patients.filter((p) => p.deviceAssigned).length;
 
@@ -225,12 +296,22 @@ const TherapistDashboard = () => {
           )
         : 0;
 
+    const guidedModeChildren = patients.filter(
+      (patient) => patient.guidedModeEnabled
+    ).length;
+
+    const lowSupportChildren = patients.filter(
+      (patient) => Number(patient.overallProgress || 0) < 40
+    ).length;
+
     return {
       totalPatients,
       activePlans,
       assignedDevices,
       pendingReports,
       avgProgress,
+      guidedModeChildren,
+      lowSupportChildren,
     };
   }, [patients, reports]);
 
@@ -263,7 +344,8 @@ const TherapistDashboard = () => {
     const levelMap = {};
 
     patients.forEach((patient) => {
-      const level = patient.assignedLevelName || "Not Assigned";
+      const level =
+        patient.assignedLevelName || patient.lessonPlanName || "Not Assigned";
       levelMap[level] = (levelMap[level] || 0) + 1;
     });
 
@@ -280,12 +362,39 @@ const TherapistDashboard = () => {
         ];
   }, [patients]);
 
+  const categoryDistributionData = useMemo(() => {
+    const categoryMap = {
+      General: 0,
+      Autism: 0,
+      "Down Syndrome": 0,
+    };
+
+    patients.forEach((patient) => {
+      const category = String(patient.childCategory || "General").trim();
+
+      if (/aut/i.test(category)) {
+        categoryMap.Autism += 1;
+      } else if (/down/i.test(category)) {
+        categoryMap["Down Syndrome"] += 1;
+      } else {
+        categoryMap.General += 1;
+      }
+    });
+
+    const result = Object.entries(categoryMap).map(([name, count]) => ({
+      name,
+      count,
+    }));
+
+    return result;
+  }, [patients]);
+
   const reminders = useMemo(() => {
     return [
       `${stats.pendingReports} reports still need review.`,
       `${stats.totalPatients} patients are currently assigned to you.`,
       `${patients.filter((p) => !p.deviceAssigned).length} children do not have assigned devices.`,
-      `${patients.filter((p) => Number(p.overallProgress) < 40).length} children may need additional support.`,
+      `${stats.lowSupportChildren} children may need additional support.`,
     ];
   }, [stats, patients]);
 
@@ -304,19 +413,28 @@ const TherapistDashboard = () => {
         icon: "📈",
       },
       {
-        title: "Pending Reports",
-        value: stats.pendingReports,
-        note: "Reports that still need therapist attention",
-        icon: "📝",
+        title: "Active Plans",
+        value: stats.activePlans,
+        note: "Children with assigned lesson or level plans",
+        icon: "🧩",
       },
       {
-        title: "Device Coverage",
-        value: `${stats.assignedDevices}/${stats.totalPatients}`,
-        note: "Assigned devices across current children",
-        icon: "🧸",
+        title: "Guided Mode Ready",
+        value: stats.guidedModeChildren,
+        note: "Children marked for guided or online-ready support",
+        icon: "🖥️",
       },
     ];
   }, [stats]);
+
+  const spotlightPatients = useMemo(() => {
+    return patients
+      .slice()
+      .sort(
+        (a, b) => Number(a.overallProgress || 0) - Number(b.overallProgress || 0)
+      )
+      .slice(0, 4);
+  }, [patients]);
 
   if (loading) {
     return (
@@ -335,6 +453,13 @@ const TherapistDashboard = () => {
     <div className="therapist-dashboard-page">
       <TherapistNavbar />
 
+      <div className="therapist-dashboard-background">
+        <div className="dashboard-orb orb-a"></div>
+        <div className="dashboard-orb orb-b"></div>
+        <div className="dashboard-orb orb-c"></div>
+        <div className="dashboard-grid-overlay"></div>
+      </div>
+
       <div className="therapist-dashboard-container">
         {pageMessage && <div className="dashboard-message">{pageMessage}</div>}
 
@@ -342,11 +467,12 @@ const TherapistDashboard = () => {
           <>
             <section className="dashboard-top-grid">
               <div className="dashboard-hero-card">
-                <span className="hero-badge">🧑‍⚕️ Therapist Dashboard</span>
+                <span className="hero-badge">🧑‍⚕️ PINEDA V2 Therapist Workspace</span>
                 <h1>Welcome back, {therapistData.name}</h1>
                 <p>
-                  A modern overview of your therapy work, patient progress,
-                  report activity, and professional profile — all in one place.
+                  A professional view of your children, lesson readiness,
+                  progress performance, report activity, guided support, and
+                  scalable therapy workflow in one dashboard.
                 </p>
 
                 <div className="hero-stats-inline">
@@ -361,6 +487,10 @@ const TherapistDashboard = () => {
                   <div className="hero-mini-stat">
                     <span>Pending Reports</span>
                     <strong>{stats.pendingReports}</strong>
+                  </div>
+                  <div className="hero-mini-stat">
+                    <span>Active Plans</span>
+                    <strong>{stats.activePlans}</strong>
                   </div>
                 </div>
               </div>
@@ -398,11 +528,11 @@ const TherapistDashboard = () => {
                     <span>{therapistData.experience || "Not added"}</span>
                   </div>
                   <div className="summary-item">
-                    <strong>Status</strong>
+                    <strong>Session Access</strong>
                     <span>
                       {therapistData.availableOnline
-                        ? "Available Online"
-                        : "Offline Only"}
+                        ? "Online Guided Sessions Enabled"
+                        : "Offline or In-Person Only"}
                     </span>
                   </div>
                 </div>
@@ -422,7 +552,7 @@ const TherapistDashboard = () => {
               ))}
             </section>
 
-            <section className="charts-grid two-chart-grid">
+            <section className="charts-grid three-chart-grid">
               <div className="chart-card chart-card-large">
                 <div className="section-head">
                   <h2>Patient Progress Overview</h2>
@@ -442,13 +572,13 @@ const TherapistDashboard = () => {
                         >
                           <stop
                             offset="5%"
-                            stopColor="#2ec4b6"
+                            stopColor="#6366f1"
                             stopOpacity={0.45}
                           />
                           <stop
                             offset="95%"
-                            stopColor="#2ec4b6"
-                            stopOpacity={0.05}
+                            stopColor="#8b5cf6"
+                            stopOpacity={0.06}
                           />
                         </linearGradient>
                       </defs>
@@ -459,7 +589,7 @@ const TherapistDashboard = () => {
                       <Area
                         type="monotone"
                         dataKey="progress"
-                        stroke="#2ec4b6"
+                        stroke="#4f46e5"
                         fill="url(#progressOverviewFill)"
                         strokeWidth={3}
                       />
@@ -471,7 +601,7 @@ const TherapistDashboard = () => {
               <div className="chart-card chart-card-large">
                 <div className="section-head">
                   <h2>Level Distribution</h2>
-                  <p>How children are spread across assigned levels.</p>
+                  <p>How children are spread across assigned levels or plans.</p>
                 </div>
 
                 <div className="chart-wrap">
@@ -484,7 +614,33 @@ const TherapistDashboard = () => {
                       <Bar
                         dataKey="count"
                         radius={[10, 10, 0, 0]}
-                        fill="#42c2ff"
+                        fill="#7c3aed"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="chart-card chart-card-large">
+                <div className="section-head">
+                  <h2>Child Category Overview</h2>
+                  <p>
+                    Quick view of general, autism-support, and Down syndrome
+                    support distribution.
+                  </p>
+                </div>
+
+                <div className="chart-wrap">
+                  <ResponsiveContainer width="100%" height={320}>
+                    <BarChart data={categoryDistributionData}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar
+                        dataKey="count"
+                        radius={[10, 10, 0, 0]}
+                        fill="#2563eb"
                       />
                     </BarChart>
                   </ResponsiveContainer>
@@ -492,7 +648,7 @@ const TherapistDashboard = () => {
               </div>
             </section>
 
-            <section className="bottom-grid single-bottom-grid">
+            <section className="bottom-grid two-column-bottom-grid">
               <div className="side-card">
                 <div className="section-head small-head">
                   <h2>Reminders</h2>
@@ -506,6 +662,43 @@ const TherapistDashboard = () => {
                       <p>{item}</p>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              <div className="side-card">
+                <div className="section-head small-head">
+                  <h2>Support Spotlight</h2>
+                  <p>
+                    Children with the lowest visible progress for faster review.
+                  </p>
+                </div>
+
+                <div className="spotlight-list">
+                  {spotlightPatients.length > 0 ? (
+                    spotlightPatients.map((patient) => (
+                      <div className="spotlight-item" key={patient.id}>
+                        <div className="spotlight-main">
+                          <strong>{patient.childName || "Child"}</strong>
+                          <span>
+                            {patient.childCategory || "General"} ·{" "}
+                            {patient.latestActivityType || "Mixed"}
+                          </span>
+                        </div>
+
+                        <div className="spotlight-meta">
+                          <span>{Number(patient.overallProgress || 0)}%</span>
+                          <small>
+                            {patient.phonemeFocus || "Not set"} ·{" "}
+                            {patient.staircaseStage || "Stage 1"}
+                          </small>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="empty-spotlight">
+                      No child records are available yet.
+                    </div>
+                  )}
                 </div>
               </div>
             </section>

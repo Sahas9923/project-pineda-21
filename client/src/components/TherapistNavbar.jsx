@@ -86,12 +86,16 @@ const TherapistNavbar = () => {
 
   return (
     <header className="therapist-navbar">
+      <div className="therapist-navbar-glow therapist-navbar-glow-left"></div>
+      <div className="therapist-navbar-glow therapist-navbar-glow-right"></div>
+
       <div className="therapist-navbar-left">
         <h2
           className="therapist-navbar-logo"
           onClick={() => navigate("/therapist-dashboard")}
         >
-          🧸 Pineda Therapist
+          <span className="therapist-logo-badge">🧸</span>
+          <span className="therapist-logo-text">Pineda Therapist</span>
         </h2>
       </div>
 
@@ -107,7 +111,6 @@ const TherapistNavbar = () => {
         <NavLink to="/therapist-progress" className="therapist-nav-link">
           Reports
         </NavLink>
-
       </nav>
 
       <div className="therapist-navbar-right" ref={dropdownRef}>
@@ -130,7 +133,7 @@ const TherapistNavbar = () => {
             <span className="therapist-user-name">
               {loadingProfile ? "Loading..." : therapistData.name}
             </span>
-            <span className="therapist-user-role">Therapist</span>
+            <span className="therapist-user-role">Therapist Workspace</span>
           </div>
 
           <span className="therapist-arrow">{showDropdown ? "▲" : "▼"}</span>

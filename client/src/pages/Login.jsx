@@ -306,7 +306,6 @@ const LoginPage = () => {
 
           <div className="feature-pills">
             <span>Speech Practice</span>
-            <span>Toy Mode</span>
             <span>Therapist Guided</span>
             <span>Progress Tracking</span>
           </div>
