@@ -78,6 +78,11 @@ const DevicePage = () => {
   const speechRef = useRef(null);
   const companionTimeoutRef = useRef(null);
 
+  const sessionPausedRef = useRef(false);
+  const sessionCompletedRef = useRef(false);
+  const sessionStartedRef = useRef(false);
+  const sessionIdRef = useRef("");
+
   const currentItem = useMemo(() => items[currentIndex] || null, [items, currentIndex]);
 
   const completionPercent =
@@ -368,6 +373,28 @@ const DevicePage = () => {
     return safeReadJson(response, fallbackMessage);
   };
 
+  const canContinueTherapy = () => {
+    return (
+      isMountedRef.current &&
+      sessionStartedRef.current &&
+      !sessionPausedRef.current &&
+      !sessionCompletedRef.current
+    );
+  };
+
+  const queueNextItemRun = (itemData, nextAttempt, itemIndex, activeSessionId, delay = 900) => {
+    setTimeout(async () => {
+      if (!canContinueTherapy()) return;
+
+      const safeSessionId =
+        activeSessionId || sessionIdRef.current || (await createSession());
+
+      if (!itemData) return;
+
+      runCurrentItem(itemData, nextAttempt, itemIndex, safeSessionId);
+    }, delay);
+  };
+
   const evaluateTherapyAvailability = async (childData, planData) => {
     if (!childData || !planData) {
       return {
@@ -538,6 +565,22 @@ const DevicePage = () => {
   }, []);
 
   useEffect(() => {
+    sessionPausedRef.current = sessionPaused;
+  }, [sessionPaused]);
+
+  useEffect(() => {
+    sessionCompletedRef.current = sessionCompleted;
+  }, [sessionCompleted]);
+
+  useEffect(() => {
+    sessionStartedRef.current = sessionStarted;
+  }, [sessionStarted]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
     if (!sessionStarted || sessionCompleted || !therapyPlanData?.sessionDurationMinutes) return;
     if (selectedMode !== "therapy") return;
 
@@ -630,7 +673,7 @@ const DevicePage = () => {
 
   const createSession = async () => {
     if (!child) return "";
-    if (sessionId) return sessionId;
+    if (sessionIdRef.current) return sessionIdRef.current;
 
     const finalDeviceCode =
       state?.deviceCode ||
@@ -676,6 +719,7 @@ const DevicePage = () => {
     });
 
     setSessionId(sessionRef.id);
+    sessionIdRef.current = sessionRef.id;
     return sessionRef.id;
   };
 
@@ -921,13 +965,9 @@ const DevicePage = () => {
       const nextAttempt = currentAttempt + 1;
       setAttempt(nextAttempt);
       setIsBusy(false);
+      setStage(`Retrying attempt ${nextAttempt}...`);
 
-      setTimeout(() => {
-        if (isMountedRef.current && !sessionPaused && !sessionCompleted) {
-          runCurrentItem(itemData, nextAttempt, itemIndex, activeSessionId);
-        }
-      }, 1600);
-
+      queueNextItemRun(itemData, nextAttempt, itemIndex, activeSessionId, 1400);
       return;
     }
 
@@ -945,24 +985,19 @@ const DevicePage = () => {
     }
 
     if (nextIndex < items.length) {
+      const nextItem = items[nextIndex];
+
       setStage("Moving to next item...");
+      setLatestResult(null);
+      setPageError("");
+      setCurrentIndex(nextIndex);
+      setIsBusy(false);
 
-      setTimeout(() => {
-        if (!isMountedRef.current) return;
+      queueNextItemRun(nextItem, 1, nextIndex, activeSessionId, 1200);
+      return;
+    }
 
-        setLatestResult(null);
-        setPageError("");
-        setCurrentIndex(nextIndex);
-        setIsBusy(false);
-
-        const nextItem = items[nextIndex];
-        if (nextItem && !sessionPaused && !sessionCompleted) {
-          setTimeout(() => {
-            runCurrentItem(nextItem, 1, nextIndex, activeSessionId);
-          }, 800);
-        }
-      }, 1800);
-    } else if (updatedProgress) {
+    if (updatedProgress) {
       await finishTherapySession(activeSessionId, updatedProgress);
     }
   };
@@ -1034,22 +1069,41 @@ const DevicePage = () => {
     activeSessionIdFromCaller = ""
   ) => {
     try {
+      if (!canContinueTherapy()) return;
+
       if (!itemData?.text?.trim()) {
         throw new Error("Current item text is missing.");
       }
 
-      if (!itemData?.audioUrl) {
-        throw new Error(`Audio is missing for item: ${itemData?.text || "unknown item"}`);
-      }
+      const activeSessionId =
+        activeSessionIdFromCaller || sessionIdRef.current || (await createSession());
 
-      if (sessionPaused || sessionCompleted) return;
+      if (!itemData?.audioUrl) {
+        const simulatedSkipResult = {
+          recognizedText: "",
+          targetText: itemData?.text || "",
+          score: 0,
+          phonemePositionScores: { initial: 0, middle: 0, end: 0 },
+          feedback: "Audio missing. Moving to the next item.",
+          shouldRetry: false,
+          moveNext: true,
+          time: new Date().toISOString(),
+        };
+
+        await handlePracticeResult(
+          simulatedSkipResult,
+          itemData,
+          currentAttempt,
+          activeSessionId,
+          itemIndex
+        );
+        return;
+      }
 
       setIsBusy(true);
       setPageError("");
       setLatestResult(null);
       setStage("Preparing item...");
-
-      const activeSessionId = activeSessionIdFromCaller || (await createSession());
 
       const createdTask = await triggerPracticeTask(
         itemData,
@@ -1065,7 +1119,7 @@ const DevicePage = () => {
       await notifyPracticeStage("playing-prompt", taskKey);
       await playAudioUrl(promptAudioUrl);
 
-      if (sessionPaused || sessionCompleted) {
+      if (!canContinueTherapy()) {
         setIsBusy(false);
         return;
       }
@@ -1075,7 +1129,7 @@ const DevicePage = () => {
         setTimeout(resolve, Number(itemData?.promptDelayMs || 700))
       );
 
-      if (sessionPaused || sessionCompleted) {
+      if (!canContinueTherapy()) {
         setIsBusy(false);
         return;
       }
@@ -1084,7 +1138,7 @@ const DevicePage = () => {
       await notifyPracticeStage("listening", taskKey);
       const audioBlob = await startLaptopRecording();
 
-      if (sessionPaused || sessionCompleted) {
+      if (!canContinueTherapy()) {
         setIsBusy(false);
         return;
       }
@@ -1114,6 +1168,10 @@ const DevicePage = () => {
     setSessionCompleted(true);
     setSessionStarted(false);
     setSessionPaused(false);
+    sessionCompletedRef.current = true;
+    sessionStartedRef.current = false;
+    sessionPausedRef.current = false;
+
     setIsBusy(false);
     setIsListening(false);
     setIsUploading(false);
@@ -1204,10 +1262,16 @@ const DevicePage = () => {
     setSessionStarted(true);
     setSessionCompleted(false);
     setSessionPaused(false);
+    sessionStartedRef.current = true;
+    sessionCompletedRef.current = false;
+    sessionPausedRef.current = false;
+
     setCurrentIndex(0);
     setAttempt(1);
     setElapsedSeconds(0);
     setSessionId("");
+    sessionIdRef.current = "";
+
     setProgress({
       attemptedItems: 0,
       completedItems: 0,
@@ -1225,9 +1289,7 @@ const DevicePage = () => {
 
     const firstItem = items[0];
     if (firstItem) {
-      setTimeout(() => {
-        runCurrentItem(firstItem, 1, 0);
-      }, 500);
+      queueNextItemRun(firstItem, 1, 0, "", 500);
     }
   };
 
@@ -1240,6 +1302,8 @@ const DevicePage = () => {
     stopSpeech();
 
     setSessionPaused(true);
+    sessionPausedRef.current = true;
+
     setIsBusy(false);
     setIsListening(false);
     setIsUploading(false);
@@ -1251,11 +1315,14 @@ const DevicePage = () => {
     if (!sessionStarted || sessionCompleted || !sessionPaused) return;
 
     setSessionPaused(false);
+    sessionPausedRef.current = false;
+
     startTimer();
     setStage("Session resumed");
 
     if (currentItem) {
       setTimeout(async () => {
+        if (!canContinueTherapy()) return;
         const activeSessionId = await createSession();
         runCurrentItem(currentItem, attempt || 1, currentIndex, activeSessionId);
       }, 700);
@@ -1275,10 +1342,14 @@ const DevicePage = () => {
       console.error("Practice reset error:", error);
     }
 
-    if (!sessionId) {
+    if (!sessionIdRef.current) {
       setSessionStarted(false);
       setSessionCompleted(true);
       setSessionPaused(false);
+      sessionStartedRef.current = false;
+      sessionCompletedRef.current = true;
+      sessionPausedRef.current = false;
+
       setIsBusy(false);
       setIsListening(false);
       setIsUploading(false);
@@ -1290,7 +1361,7 @@ const DevicePage = () => {
     }
 
     const finalProgress = { ...progress };
-    await finishTherapySession(sessionId, finalProgress);
+    await finishTherapySession(sessionIdRef.current, finalProgress);
   };
 
   const restartAll = async () => {
@@ -1309,10 +1380,16 @@ const DevicePage = () => {
     await stopCompanionMode();
 
     setSessionId("");
+    sessionIdRef.current = "";
+
     setSessionStarted(false);
     setSessionCompleted(false);
     setSessionBlocked(false);
     setSessionPaused(false);
+    sessionStartedRef.current = false;
+    sessionCompletedRef.current = false;
+    sessionPausedRef.current = false;
+
     setCurrentIndex(0);
     setAttempt(1);
     setStage("Ready");
@@ -1447,197 +1524,181 @@ const DevicePage = () => {
             </div>
 
             <div className={`practice-zone ${selectedMode === "companion" ? "companion-only" : ""}`}>
-              <div className="practice-hero">
-                <div className="practice-status-row">
-                  <div className="status-chip">
-                    {selectedMode === "therapy"
-                      ? `Item ${items.length > 0 ? currentIndex + 1 : 0} / ${items.length}`
-                      : "Friendly Interaction"}
+              {selectedMode === "therapy" ? (
+                <div className="therapy-main-screen">
+                  <div className="practice-status-row">
+                    <div className="status-chip">
+                      Item {items.length > 0 ? currentIndex + 1 : 0} / {items.length}
+                    </div>
+                    <div className="status-chip secondary">
+                      {currentItem?.type || "-"}
+                    </div>
                   </div>
-                  <div className="status-chip secondary">
-                    {selectedMode === "therapy" ? currentItem?.type || "-" : "keyword listening"}
+
+                  <div className="therapy-content-grid">
+                    <div className="therapy-visual-panel">
+                      <div className="image-frame large-frame">{renderMedia()}</div>
+
+                      <div className="word-area compact-word-area">
+                        <h2>{currentItem?.text || "No item found"}</h2>
+                        <p>{friendlyFeedback}</p>
+                      </div>
+                    </div>
+
+                    <div className="therapy-info-panel">
+                      <div className="side-panel-card compact-card">
+                        <span className="side-label">Session Overview</span>
+
+                        <div className="session-mini-grid">
+                          <div className="mini-stat">
+                            <small>Progress</small>
+                            <strong>{progress.completedItems}/{items.length}</strong>
+                          </div>
+                          <div className="mini-stat">
+                            <small>Attempt</small>
+                            <strong>{attempt}/{MAX_ATTEMPTS}</strong>
+                          </div>
+                          <div className="mini-stat">
+                            <small>Timer</small>
+                            <strong>{formatTime(elapsedSeconds)}</strong>
+                          </div>
+                          <div className="mini-stat">
+                            <small>Status</small>
+                            <strong>
+                              {sessionCompleted
+                                ? "Completed"
+                                : sessionPaused
+                                ? "Paused"
+                                : sessionStarted
+                                ? "Active"
+                                : "Ready"}
+                            </strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="side-panel-card compact-card highlight">
+                        <span className="side-label">Overall Score</span>
+                        <strong className="overall-score compact-score">
+                          {progress.overallScore}%
+                        </strong>
+                        <p>Stored for therapist reporting.</p>
+                      </div>
+
+                      <div className="side-panel-card compact-card">
+                        <span className="side-label">Live Status</span>
+                        <div className="live-status-inline">
+                          <strong>
+                            {isPromptPlaying
+                              ? "Playing prompt..."
+                              : isListening
+                              ? "Listening..."
+                              : isUploading
+                              ? "Checking response..."
+                              : stage}
+                          </strong>
+                        </div>
+                      </div>
+
+                      {latestResult && (
+                        <div className="side-panel-card compact-card">
+                          <span className="side-label">Recognized</span>
+                          <div className="recognized-box">
+                            <strong>{latestResult.recognizedText || "No speech detected"}</strong>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="side-panel-card compact-card">
+                        <span className="side-label">Position Scores</span>
+                        <div className="status-grid score-grid-3">
+                          <div>
+                            <small>Initial</small>
+                            <strong>{progress.initialAverage}%</strong>
+                          </div>
+                          <div>
+                            <small>Middle</small>
+                            <strong>{progress.middleAverage}%</strong>
+                          </div>
+                          <div>
+                            <small>End</small>
+                            <strong>{progress.endAverage}%</strong>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="control-row therapy-controls">
+                    {sessionPaused ? (
+                      <button
+                        type="button"
+                        className="primary-btn"
+                        onClick={resumeSession}
+                        disabled={sessionCompleted}
+                      >
+                        Resume Session
+                      </button>
+                    ) : (
+                      <button type="button" className="primary-btn" disabled>
+                        Therapy Running
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={pauseSession}
+                      disabled={!sessionStarted || sessionCompleted || sessionPaused}
+                    >
+                      Pause
+                    </button>
+
+                    <button
+                      type="button"
+                      className="danger-btn"
+                      onClick={endSession}
+                      disabled={!sessionStarted || sessionCompleted}
+                    >
+                      End
+                    </button>
+
+                    <button type="button" className="ghost-btn" onClick={restartAll}>
+                      Restart
+                    </button>
                   </div>
                 </div>
+              ) : (
+                <div className="practice-hero companion-hero">
+                  <div className="practice-status-row">
+                    <div className="status-chip">Friendly Interaction</div>
+                    <div className="status-chip secondary">keyword listening</div>
+                  </div>
 
-                {selectedMode === "therapy" ? (
-                  <>
-                    <div className="image-frame">{renderMedia()}</div>
-
-                    <div className="word-area">
-                      <h2>{currentItem?.text || "No item found"}</h2>
-                      <p>{friendlyFeedback}</p>
-                      <p>
-                        Progress: {progress.completedItems}/{items.length} items completed
-                      </p>
-                    </div>
-
-                    <div className="live-status-box">
-                      <span>Live Status</span>
-                      <strong>
-                        {isPromptPlaying
-                          ? "Playing prompt..."
-                          : isListening
-                          ? "Listening..."
-                          : isUploading
-                          ? "Checking response..."
-                          : stage}
-                      </strong>
-                    </div>
-
-                    {latestResult && (
-                      <div className="live-status-box">
-                        <span>Recognized</span>
-                        <strong>{latestResult.recognizedText || "No speech detected"}</strong>
-                      </div>
-                    )}
-                  </>
-                ) : (
                   <div className="companion-center-card">
                     <div className="companion-emoji">🧸</div>
                     <h2>Companion Mode</h2>
                     <p>{friendlyFeedback}</p>
+
                     <div className="live-status-box">
                       <span>Current Status</span>
                       <strong>{stage}</strong>
                     </div>
                   </div>
-                )}
 
-                <div className="control-row">
-                  {selectedMode === "companion" ? (
-                    <>
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        onClick={beginTherapySession}
-                        disabled={!therapyModeAllowed || sessionBlocked || !items.length}
-                      >
-                        Start Therapy Session
-                      </button>
+                  <div className="control-row">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={beginTherapySession}
+                      disabled={!therapyModeAllowed || sessionBlocked || !items.length}
+                    >
+                      Start Therapy Session
+                    </button>
 
-                      <button type="button" className="ghost-btn" onClick={restartAll}>
-                        Restart Device Flow
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {sessionPaused ? (
-                        <button
-                          type="button"
-                          className="primary-btn"
-                          onClick={resumeSession}
-                          disabled={sessionCompleted}
-                        >
-                          Resume Session
-                        </button>
-                      ) : (
-                        <button type="button" className="primary-btn" disabled>
-                          Therapy Running
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={pauseSession}
-                        disabled={!sessionStarted || sessionCompleted || sessionPaused}
-                      >
-                        Pause
-                      </button>
-
-                      <button
-                        type="button"
-                        className="danger-btn"
-                        onClick={endSession}
-                        disabled={!sessionStarted || sessionCompleted}
-                      >
-                        End
-                      </button>
-
-                      <button type="button" className="ghost-btn" onClick={restartAll}>
-                        Restart
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {selectedMode === "therapy" && (
-                <div className="therapy-side-panel">
-                  <div className="side-panel-card">
-                    <span className="side-label">Session Progress</span>
-                    <div className="progress-ring-box">
-                      <strong>{completionPercent}%</strong>
-                      <small>Completed</small>
-                    </div>
-
-                    <div className="progress-bar-wrap">
-                      <div className="progress-bar">
-                        <div className="progress-fill" style={{ width: `${completionPercent}%` }} />
-                      </div>
-                    </div>
-
-                    <p>
-                      {progress.completedItems} of {items.length} items completed
-                    </p>
-                  </div>
-
-                  <div className="side-panel-card highlight">
-                    <span className="side-label">Overall Progress</span>
-                    <strong className="overall-score">{progress.overallScore}%</strong>
-                    <p>Stored for therapist reporting.</p>
-                  </div>
-
-                  <div className="side-panel-card">
-                    <span className="side-label">Current Status</span>
-                    <div className="status-grid">
-                      <div>
-                        <small>Stage</small>
-                        <strong>{stage}</strong>
-                      </div>
-                      <div>
-                        <small>Attempt</small>
-                        <strong>{attempt}/{MAX_ATTEMPTS}</strong>
-                      </div>
-                      <div>
-                        <small>Status</small>
-                        <strong>
-                          {sessionCompleted
-                            ? "Completed"
-                            : sessionPaused
-                            ? "Paused"
-                            : sessionStarted
-                            ? "Active"
-                            : "Ready"}
-                        </strong>
-                      </div>
-                      <div>
-                        <small>Mode</small>
-                        <strong>{selectedMode}</strong>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="side-panel-card">
-                    <span className="side-label">Position Scores</span>
-                    <div className="status-grid">
-                      <div>
-                        <small>Initial</small>
-                        <strong>{progress.initialAverage}%</strong>
-                      </div>
-                      <div>
-                        <small>Middle</small>
-                        <strong>{progress.middleAverage}%</strong>
-                      </div>
-                      <div>
-                        <small>End</small>
-                        <strong>{progress.endAverage}%</strong>
-                      </div>
-                      <div>
-                        <small>Saved</small>
-                        <strong>Yes</strong>
-                      </div>
-                    </div>
+                    <button type="button" className="ghost-btn" onClick={restartAll}>
+                      Restart Device Flow
+                    </button>
                   </div>
                 </div>
               )}
