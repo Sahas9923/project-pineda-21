@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../styles/Login.css";
 
@@ -32,6 +32,15 @@ const LoginPage = () => {
     text: "",
     type: "",
   });
+
+  const teddyItems = useMemo(
+    () =>
+      Array.from({ length: 24 }, (_, index) => ({
+        id: index + 1,
+        sizeClass: index % 3 === 0 ? "large" : index % 2 === 0 ? "small" : "",
+      })),
+    []
+  );
 
   const showMessage = (text, type = "error") => {
     setMessage({ text, type });
@@ -268,29 +277,59 @@ const LoginPage = () => {
   return (
     <div className="login-container">
       <div className="left-panel">
+        <div className="left-panel-glow left-glow-one"></div>
+        <div className="left-panel-glow left-glow-two"></div>
+        <div className="left-grid-overlay"></div>
+
         <div className="teddy-rain">
-          {[...Array(20)].map((_, i) => (
-            <span key={i}>🧸</span>
+          {teddyItems.map((item) => (
+            <span key={item.id} className={item.sizeClass}>
+              🧸
+            </span>
           ))}
         </div>
 
         <div className="info-content">
+          <div className="brand-badge">PINEDA V2</div>
+
+          <div className="hero-logo-wrap">
+            <div className="hero-logo-ring"></div>
+            <div className="hero-logo-core">🧸</div>
+          </div>
+
           <h1>Pineda</h1>
-          <p>AI-Powered Speech Therapy Platform</p>
+          <p className="hero-description">
+            Advanced speech learning and therapy platform for guided child
+            development, therapist-led plans, toy-assisted interaction, and
+            future-ready intelligent learning experiences.
+          </p>
+
+          <div className="feature-pills">
+            <span>Speech Practice</span>
+            <span>Toy Mode</span>
+            <span>Therapist Guided</span>
+            <span>Progress Tracking</span>
+          </div>
 
           <div className="features">
-            <div>🎯 Improve speech skills</div>
-            <div>🧠 Smart diagnosis & tracking</div>
-            <div>🎤 Voice feedback system</div>
-            <div>👨‍⚕️ Therapist + Parent support</div>
+            <div>🎯 Structured sound, word, sentence, and advanced activities</div>
+            <div>🧠 Smart prototype-ready tracking with scalable reporting</div>
+            <div>🎤 Laptop + mic mode with future toy and AR expansion</div>
+            <div>👨‍⚕️ Therapist, parent, and guided learning support</div>
           </div>
         </div>
       </div>
 
       <div className="right-panel">
+        <div className="right-panel-orb orb-one"></div>
+        <div className="right-panel-orb orb-two"></div>
+
         <div className="login-box">
           <div className="header">
-            <div className="logo-icon">🧸</div>
+            <div className="logo-icon">
+              <span>🧸</span>
+            </div>
+
             <h2>Welcome to Pineda</h2>
 
             <div className="sound-btn-container">
