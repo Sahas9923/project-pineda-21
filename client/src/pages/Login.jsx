@@ -297,7 +297,7 @@ const LoginPage = () => {
             <div className="hero-logo-core">🧸</div>
           </div>
 
-          <h1>Pineda</h1>
+          <h1>Pineda 2.0</h1>
           <p className="hero-description">
             Advanced speech learning and therapy platform for guided child
             development, therapist-led plans, toy-assisted interaction, and
